@@ -1,96 +1,118 @@
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use crate::browser::browser_state::{BrowserState, WindowBounds};
+use crate::browser::tab_manager::{Tab, TabId};
+use crate::core::events::event_bus::{Event, EventBus};
 
-use crate::core::error::NetraError;
-
-/// Coordinates high-level browser actions requested through the Rust FFI layer.
+/// Central synchronous orchestrator for the browser core.
 ///
-/// This restored controller is intentionally minimal. It preserves the stable
-/// API surface that FFI calls delegate into while future navigation, privacy,
-/// and storage logic is rebuilt around it.
+/// This controller exposes a single entry point for high-level browser
+/// operations. It owns the global [BrowserState] coordinator and the internal
+/// [EventBus], delegating all stateful behavior to the state layer while
+/// publishing shared internal events after state-changing operations.
+///
+/// Architectural constraints:
+/// - no UI logic
+/// - no direct WebView or native bridge interaction
+/// - no duplicated logic from lower browser modules
+/// - no async execution or threading
 pub struct BrowserController {
-    tabs: Mutex<HashSet<String>>,
+    /// Global browser state coordinator.
+    pub state: BrowserState,
+    /// Internal synchronous event bus.
+    pub event_bus: EventBus,
 }
 
 impl BrowserController {
-    /// Creates a new controller instance.
+    /// Creates a new browser controller with default state and an empty event
+    /// bus.
     pub fn new() -> Self {
         Self {
-            tabs: Mutex::new(HashSet::new()),
+            state: BrowserState::new(),
+            event_bus: EventBus::new(),
         }
     }
 
-    /// Creates a new frame record for the supplied tab identifier.
-    pub fn create_frame(&self, tab_id: String) -> Result<(), NetraError> {
-        let mut tabs = self
-            .tabs
-            .lock()
-            .map_err(|_| NetraError::OperationFailed("tab state lock poisoned".to_string()))?;
-        tabs.insert(tab_id);
-        Ok(())
+    /// Creates a new tab through [BrowserState] and then publishes
+    /// [Event::TabCreated] with the created tab identifier.
+    pub fn create_tab(&mut self) -> Tab {
+        let tab = self.state.create_tab();
+        self.event_bus.publish(Event::TabCreated(tab.id.clone()));
+        tab
     }
 
-    /// Removes an existing frame record.
-    pub fn destroy_frame(&self, tab_id: String) -> Result<(), NetraError> {
-        let mut tabs = self
-            .tabs
-            .lock()
-            .map_err(|_| NetraError::OperationFailed("tab state lock poisoned".to_string()))?;
-
-        if tabs.remove(&tab_id) {
-            Ok(())
-        } else {
-            Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")))
-        }
+    /// Closes an existing tab through [BrowserState] and then publishes
+    /// [Event::TabClosed] with the closed tab identifier.
+    pub fn close_tab(&mut self, tab_id: TabId) {
+        self.state.close_tab(tab_id.clone());
+        self.event_bus.publish(Event::TabClosed(tab_id));
     }
 
-    /// Loads a URL for the supplied tab identifier.
-    pub async fn load_url(&self, tab_id: String, _url: String) -> Result<(), NetraError> {
-        self.ensure_tab_exists(&tab_id)
+    /// Delegates active-tab switching to [BrowserState].
+    ///
+    /// This method intentionally does not publish an additional event-bus
+    /// event because the shared internal event surface defined for this phase
+    /// does not include an active-tab-change variant.
+    pub fn set_active_tab(&mut self, tab_id: TabId) {
+        self.state.set_active_tab(tab_id);
     }
 
-    /// Requests back navigation for the supplied tab identifier.
-    pub fn go_back(&self, tab_id: String) -> Result<(), NetraError> {
-        self.ensure_tab_exists(&tab_id)
+    /// Navigates the active tab through [BrowserState].
+    ///
+    /// Returns the normalized URL when an active tab exists, otherwise `None`.
+    pub fn navigate(&mut self, input: String) -> Option<String> {
+        let tab_id = self.get_active_tab_id()?;
+        let url = self.state.navigate(input)?;
+        self.event_bus
+            .publish(Event::NavigationCompleted(tab_id, url.clone()));
+        Some(url)
     }
 
-    /// Requests forward navigation for the supplied tab identifier.
-    pub fn go_forward(&self, tab_id: String) -> Result<(), NetraError> {
-        self.ensure_tab_exists(&tab_id)
+    /// Requests backward navigation through [BrowserState].
+    ///
+    /// Returns the resolved URL when backward navigation is possible,
+    /// otherwise `None`.
+    pub fn go_back(&mut self) -> Option<String> {
+        let tab_id = self.get_active_tab_id()?;
+        let url = self.state.go_back()?;
+        self.event_bus
+            .publish(Event::NavigationCompleted(tab_id, url.clone()));
+        Some(url)
     }
 
-    /// Requests reload for the supplied tab identifier.
-    pub async fn reload(&self, tab_id: String) -> Result<(), NetraError> {
-        self.ensure_tab_exists(&tab_id)
+    /// Requests forward navigation through [BrowserState].
+    ///
+    /// Returns the resolved URL when forward navigation is possible,
+    /// otherwise `None`.
+    pub fn go_forward(&mut self) -> Option<String> {
+        let tab_id = self.get_active_tab_id()?;
+        let url = self.state.go_forward()?;
+        self.event_bus
+            .publish(Event::NavigationCompleted(tab_id, url.clone()));
+        Some(url)
     }
 
-    /// Requests stop-loading for the supplied tab identifier.
-    pub fn stop_loading(&self, tab_id: String) -> Result<(), NetraError> {
-        self.ensure_tab_exists(&tab_id)
+    /// Returns the current tab snapshot from [BrowserState].
+    pub fn get_tabs(&self) -> Vec<Tab> {
+        self.state.get_tabs()
     }
 
-    /// Executes JavaScript for the supplied tab identifier.
-    pub async fn execute_script(&self, tab_id: String, _js: String) -> Result<String, NetraError> {
-        self.ensure_tab_exists(&tab_id)?;
-        Ok(String::new())
+    /// Returns the currently active tab identifier, if any.
+    pub fn get_active_tab_id(&self) -> Option<TabId> {
+        self.state.get_active_tab_id()
     }
 
-    fn ensure_tab_exists(&self, tab_id: &str) -> Result<(), NetraError> {
-        let tabs = self
-            .tabs
-            .lock()
-            .map_err(|_| NetraError::OperationFailed("tab state lock poisoned".to_string()))?;
+    /// Updates window bounds through [BrowserState].
+    pub fn set_window_bounds(&mut self, bounds: WindowBounds) {
+        self.state.set_window_bounds(bounds);
+    }
 
-        if tabs.contains(tab_id) {
-            Ok(())
-        } else {
-            Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")))
-        }
+    /// Registers a synchronous event subscriber by delegating to [EventBus].
+    pub fn subscribe(&mut self, handler: Box<dyn Fn(&Event)>) {
+        self.event_bus.subscribe(handler);
     }
 }
 
-/// Returns the shared browser controller used by FFI entry points.
-pub fn get_browser_controller() -> &'static BrowserController {
-    static CONTROLLER: OnceLock<BrowserController> = OnceLock::new();
-    CONTROLLER.get_or_init(BrowserController::new)
+impl Default for BrowserController {
+    fn default() -> Self {
+        Self::new()
+    }
 }

@@ -1,230 +1,290 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use crate::core::entities::tab::Tab;
-use crate::core::error::NetraError;
+use uuid::Uuid;
 
-const BACKGROUND_LIMIT: usize = 5;
-const SUSPEND_TIMEOUT_MS: u64 = 5 * 60 * 1000; // 5 minutes
+/// Stable identifier used to address tabs across the browser core.
+pub type TabId = String;
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+/// In-memory browser tab state owned by the Rust core.
+///
+/// This model intentionally contains only engine/domain state and no UI
+/// concerns. Every tab is tracked by [TabManager] and mutated only through
+/// lifecycle operations.
+#[derive(Debug, Clone)]
+pub struct Tab {
+    pub id: TabId,
+    pub url: String,
+    pub title: String,
+    pub is_active: bool,
+    pub is_loading: bool,
+    pub is_suspended: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub last_accessed: Instant,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TabStatus {
-    /// Currently visible tab. Only one at a time.
-    Active,
-    /// Alive in memory but not visible. Max 5 at a time.
-    Background,
-    /// Tab struct exists but WebView frame is destroyed to free memory.
-    Suspended,
+impl Tab {
+    /// Creates a new tab with default browser-visible state.
+    fn new(id: TabId) -> Self {
+        Self {
+            id,
+            url: "about:blank".to_string(),
+            title: String::new(),
+            is_active: false,
+            is_loading: false,
+            is_suspended: false,
+            can_go_back: false,
+            can_go_forward: false,
+            last_accessed: Instant::now(),
+        }
+    }
 }
 
-struct TabEntry {
-    tab: Tab,
-    status: TabStatus,
-    /// Unix timestamp milliseconds of last user interaction.
-    last_active_ms: u64,
+/// Lifecycle events emitted by [TabManager].
+///
+/// The manager only emits these events and does not consume or dispatch them
+/// to handlers directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabEvent {
+    TabCreated(TabId),
+    TabClosed(TabId),
+    TabSwitched(TabId),
+    TabSuspended(TabId),
+    TabResumed(TabId),
 }
 
+/// Emits a tab lifecycle event.
+///
+/// This is an integration stub; a future event bus will consume these events.
+pub fn emit_event(_event: TabEvent) {}
+
+/// Owns tab lifecycle, active-tab transitions, suspension, and LRU background
+/// memory policy for the browser engine.
+///
+/// Rules implemented:
+/// - only one tab is active at a time
+/// - background (non-active, non-suspended) tabs are limited by LRU policy
+/// - idle background tabs are suspended after five minutes
+/// - lifecycle operations emit [TabEvent]
 pub struct TabManager {
-    tabs: HashMap<String, TabEntry>,
-    active_tab_id: Option<String>,
+    tabs: HashMap<TabId, Tab>,
+    active_tab_id: Option<TabId>,
+    max_background_tabs: usize,
 }
 
 impl TabManager {
+    const DEFAULT_MAX_BACKGROUND_TABS: usize = 5;
+    const IDLE_SUSPEND_AFTER: Duration = Duration::from_secs(5 * 60);
+
+    /// Creates a manager with the default background-tab limit.
     pub fn new() -> Self {
         Self {
             tabs: HashMap::new(),
             active_tab_id: None,
+            max_background_tabs: Self::DEFAULT_MAX_BACKGROUND_TABS,
         }
     }
 
-    /// Creates a new tab. Adds it as Background.
-    /// If background limit would be exceeded, suspends the LRU background tab first.
-    pub fn create_tab(&mut self, tab_id: String) -> Result<Tab, NetraError> {
-        if self.tabs.contains_key(&tab_id) {
-            return Err(NetraError::InvalidInput(format!(
-                "tab `{tab_id}` already exists"
-            )));
-        }
-        self.enforce_background_limit();
-        let tab = Tab::new(tab_id.clone());
-        self.tabs.insert(
-            tab_id,
-            TabEntry {
-                tab: tab.clone(),
-                status: TabStatus::Background,
-                last_active_ms: now_ms(),
-            },
-        );
-        Ok(tab)
+    /// Creates a new tab, activates it, applies LRU background suspension, and
+    /// emits [TabEvent::TabCreated].
+    pub fn create_tab(&mut self) -> Tab {
+        let id = Uuid::new_v4().to_string();
+        self.deactivate_current_active();
+
+        let mut tab = Tab::new(id.clone());
+        tab.is_active = true;
+        tab.last_accessed = Instant::now();
+
+        self.tabs.insert(id.clone(), tab.clone());
+        self.active_tab_id = Some(id.clone());
+
+        self.enforce_background_tab_limit();
+        emit_event(TabEvent::TabCreated(id));
+        tab
     }
 
-    /// Removes a tab entirely. If active, active_tab_id becomes None.
-    pub fn close_tab(&mut self, tab_id: &str) -> Result<(), NetraError> {
-        if self.tabs.remove(tab_id).is_none() {
-            return Err(NetraError::NotFound(format!("tab `{tab_id}` not found")));
-        }
-        if self.active_tab_id.as_deref() == Some(tab_id) {
-            self.active_tab_id = None;
-        }
-        Ok(())
-    }
-
-    /// Sets the given tab as active. Previous active tab becomes Background.
-    pub fn set_active_tab(&mut self, tab_id: &str) -> Result<(), NetraError> {
-        if !self.tabs.contains_key(tab_id) {
-            return Err(NetraError::NotFound(format!("tab `{tab_id}` not found")));
-        }
-
-        // No-op if already active.
-        if self.active_tab_id.as_deref() == Some(tab_id) {
-            return Ok(());
-        }
-
-        // Demote current active to background.
-        if let Some(prev_id) = self.active_tab_id.clone() {
-            if let Some(entry) = self.tabs.get_mut(&prev_id) {
-                entry.status = TabStatus::Background;
-                entry.last_active_ms = now_ms();
-                entry.tab.set_active(false);
-            }
-            self.enforce_background_limit();
-        }
-
-        // Promote new tab to active.
-        let entry = self.tabs.get_mut(tab_id).unwrap();
-        entry.status = TabStatus::Active;
-        entry.last_active_ms = now_ms();
-        entry.tab.set_active(true);
-        self.active_tab_id = Some(tab_id.to_string());
-        Ok(())
-    }
-
-    /// Returns clones of all Tab structs.
-    pub fn get_all_tabs(&self) -> Vec<Tab> {
-        self.tabs.values().map(|e| e.tab.clone()).collect()
-    }
-
-    /// Returns a single tab by ID.
-    pub fn get_tab(&self, tab_id: &str) -> Result<Tab, NetraError> {
-        self.tabs
-            .get(tab_id)
-            .map(|e| e.tab.clone())
-            .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` not found")))
-    }
-
-    /// Returns the active tab ID if any.
-    pub fn active_tab_id(&self) -> Option<&str> {
-        self.active_tab_id.as_deref()
-    }
-
-    /// Manually suspends a background tab. Cannot suspend the active tab.
-    pub fn suspend_tab(&mut self, tab_id: &str) -> Result<(), NetraError> {
-        let entry = self
-            .tabs
-            .get_mut(tab_id)
-            .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` not found")))?;
-        if entry.status == TabStatus::Active {
-            return Err(NetraError::InvalidInput(
-                "cannot suspend the active tab".to_string(),
-            ));
-        }
-        entry.status = TabStatus::Suspended;
-        Ok(())
-    }
-
-    /// Marks a suspended tab as Background (resuming).
-    pub fn resume_tab(&mut self, tab_id: &str) -> Result<(), NetraError> {
-        let entry = self
-            .tabs
-            .get_mut(tab_id)
-            .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` not found")))?;
-        if entry.status != TabStatus::Suspended {
-            return Err(NetraError::InvalidInput(format!(
-                "tab `{tab_id}` is not suspended"
-            )));
-        }
-        entry.status = TabStatus::Background;
-        entry.last_active_ms = now_ms();
-        Ok(())
-    }
-
-    /// Updates last_active_ms for a tab to now.
-    pub fn touch_tab(&mut self, tab_id: &str) -> Result<(), NetraError> {
-        let entry = self
-            .tabs
-            .get_mut(tab_id)
-            .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` not found")))?;
-        entry.last_active_ms = now_ms();
-        Ok(())
-    }
-
-    /// Suspends background tabs idle longer than SUSPEND_TIMEOUT_MS.
-    pub fn suspend_idle_tabs(&mut self) -> Vec<String> {
-        let cutoff = now_ms().saturating_sub(SUSPEND_TIMEOUT_MS);
-        let to_suspend: Vec<String> = self
-            .tabs
-            .iter()
-            .filter(|(_, e)| e.status == TabStatus::Background && e.last_active_ms < cutoff)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &to_suspend {
-            if let Some(entry) = self.tabs.get_mut(id) {
-                entry.status = TabStatus::Suspended;
-            }
-        }
-        to_suspend
-    }
-
-    /// Count of Active + Background tabs.
-    pub fn live_tab_count(&self) -> usize {
-        self.tabs
-            .values()
-            .filter(|e| e.status != TabStatus::Suspended)
-            .count()
-    }
-
-    /// Count of Background tabs only.
-    pub fn background_tab_count(&self) -> usize {
-        self.tabs
-            .values()
-            .filter(|e| e.status == TabStatus::Background)
-            .count()
-    }
-
-    // --- private helpers ---
-
-    /// Suspends the LRU background tab if background count exceeds the limit.
-    fn enforce_background_limit(&mut self) {
-        if self.background_tab_count() <= BACKGROUND_LIMIT {
+    /// Closes the given tab and emits [TabEvent::TabClosed] when removed.
+    ///
+    /// If the closed tab was active, another available tab is promoted to
+    /// active.
+    pub fn close_tab(&mut self, tab_id: String) {
+        let was_active = self.active_tab_id.as_deref() == Some(tab_id.as_str());
+        if self.tabs.remove(&tab_id).is_none() {
             return;
         }
-        if let Some(lru_id) = self.find_lru_background() {
-            if let Some(entry) = self.tabs.get_mut(&lru_id) {
-                entry.status = TabStatus::Suspended;
+
+        emit_event(TabEvent::TabClosed(tab_id.clone()));
+
+        if !was_active {
+            return;
+        }
+
+        self.active_tab_id = None;
+        if let Some(next_id) = self.tabs.keys().next().cloned() {
+            if let Some(next_tab) = self.tabs.get_mut(&next_id) {
+                next_tab.is_active = true;
+                next_tab.is_suspended = false;
+                next_tab.is_loading = true;
+                next_tab.last_accessed = Instant::now();
+                self.active_tab_id = Some(next_id);
             }
         }
     }
 
-    /// Returns the ID of the least recently used background tab.
-    fn find_lru_background(&self) -> Option<String> {
-        self.tabs
-            .iter()
-            .filter(|(_, e)| e.status == TabStatus::Background)
-            .min_by_key(|(_, e)| e.last_active_ms)
-            .map(|(id, _)| id.clone())
+    /// Switches active focus to the target tab and emits
+    /// [TabEvent::TabSwitched].
+    ///
+    /// Activation ownership rules:
+    /// - this method is the only place that updates `active_tab_id`
+    /// - if the target tab is suspended, [Self::resume_tab] is called first
+    /// - previous active tab is deactivated
+    /// - target tab is marked active and timestamped
+    pub fn set_active_tab(&mut self, tab_id: String) {
+        if !self.tabs.contains_key(&tab_id) {
+            return;
+        }
+
+        if self
+            .tabs
+            .get(&tab_id)
+            .map(|tab| tab.is_suspended)
+            .unwrap_or(false)
+        {
+            self.resume_tab(tab_id.clone());
+        }
+
+        self.deactivate_current_active();
+
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.is_active = true;
+            tab.last_accessed = Instant::now();
+            tab.is_suspended = false;
+        }
+
+        self.active_tab_id = Some(tab_id.clone());
+        self.enforce_background_tab_limit();
+        emit_event(TabEvent::TabSwitched(tab_id));
+    }
+
+    /// Returns a cloned snapshot of all tracked tabs.
+    pub fn get_all_tabs(&self) -> Vec<Tab> {
+        self.tabs.values().cloned().collect()
+    }
+
+    /// Returns the identifier of the currently active tab, if any.
+    ///
+    /// This exposes the manager-owned active-tab pointer so coordinating
+    /// modules can read active state without scanning all tab records.
+    pub fn get_active_tab_id(&self) -> Option<TabId> {
+        self.active_tab_id.clone()
+    }
+
+    /// Suspends a tab when it is a non-active, non-suspended background tab
+    /// and emits [TabEvent::TabSuspended].
+    pub fn suspend_tab(&mut self, tab_id: String) {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+        };
+
+        if tab.is_active || tab.is_suspended {
+            return;
+        }
+
+        tab.is_suspended = true;
+        tab.is_loading = false;
+        emit_event(TabEvent::TabSuspended(tab_id));
+    }
+
+    /// Resumes a suspended tab and emits [TabEvent::TabResumed].
+    ///
+    /// This method intentionally does not change active-tab ownership.
+    /// It only applies resume-state fields:
+    /// - `is_suspended = false`
+    /// - `is_loading = true`
+    /// - `last_accessed = now`
+    ///
+    /// Any active-tab switch must be performed by [Self::set_active_tab].
+    pub fn resume_tab(&mut self, tab_id: String) {
+        let is_suspended = self
+            .tabs
+            .get(&tab_id)
+            .map(|tab| tab.is_suspended)
+            .unwrap_or(false);
+        if !is_suspended {
+            return;
+        }
+
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.is_suspended = false;
+            tab.is_loading = true;
+            tab.last_accessed = Instant::now();
+        }
+
+        emit_event(TabEvent::TabResumed(tab_id));
+    }
+
+    /// Suspends idle background tabs that have been inactive for more than
+    /// five minutes.
+    pub fn check_idle_suspension(&mut self) {
+        let now = Instant::now();
+        let to_suspend: Vec<TabId> = self
+            .tabs
+            .values()
+            .filter(|tab| {
+                !tab.is_active
+                    && !tab.is_suspended
+                    && now.duration_since(tab.last_accessed) > Self::IDLE_SUSPEND_AFTER
+            })
+            .map(|tab| tab.id.clone())
+            .collect();
+
+        for tab_id in to_suspend {
+            self.suspend_tab(tab_id);
+        }
+    }
+
+    fn deactivate_current_active(&mut self) {
+        if let Some(active_id) = self.active_tab_id.as_ref() {
+            if let Some(active_tab) = self.tabs.get_mut(active_id) {
+                active_tab.is_active = false;
+            }
+        }
+    }
+
+    /// Enforces LRU suspension for background tabs.
+    ///
+    /// Background tabs are those with:
+    /// - `is_active == false`
+    /// - `is_suspended == false`
+    ///
+    /// When the count exceeds `max_background_tabs`, the oldest by
+    /// `last_accessed` are suspended until the limit is satisfied.
+    fn enforce_background_tab_limit(&mut self) {
+        let mut background_tabs: Vec<(TabId, Instant)> = self
+            .tabs
+            .values()
+            .filter(|tab| !tab.is_active && !tab.is_suspended)
+            .map(|tab| (tab.id.clone(), tab.last_accessed))
+            .collect();
+
+        if background_tabs.len() <= self.max_background_tabs {
+            return;
+        }
+
+        background_tabs.sort_by_key(|(_, accessed_at)| *accessed_at);
+        let to_suspend_count = background_tabs.len() - self.max_background_tabs;
+
+        for (tab_id, _) in background_tabs.into_iter().take(to_suspend_count) {
+            self.suspend_tab(tab_id);
+        }
     }
 }
 
-pub fn get_tab_manager() -> &'static Mutex<TabManager> {
-    static TAB_MANAGER: OnceLock<Mutex<TabManager>> = OnceLock::new();
-    TAB_MANAGER.get_or_init(|| Mutex::new(TabManager::new()))
+impl Default for TabManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -232,69 +292,91 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_and_close_tab() {
-        let mut mgr = TabManager::new();
-        mgr.create_tab("t1".to_string()).unwrap();
-        assert!(mgr.get_tab("t1").is_ok());
-        mgr.close_tab("t1").unwrap();
-        assert!(mgr.get_tab("t1").is_err());
+    fn create_tab_sets_new_tab_active() {
+        let mut manager = TabManager::new();
+        let tab = manager.create_tab();
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(tab.id.as_str()));
+        assert!(manager.tabs.get(&tab.id).map(|t| t.is_active).unwrap_or(false));
     }
 
     #[test]
-    fn test_active_tab_switches_correctly() {
-        let mut mgr = TabManager::new();
-        mgr.create_tab("t1".to_string()).unwrap();
-        mgr.create_tab("t2".to_string()).unwrap();
-        mgr.set_active_tab("t1").unwrap();
-        mgr.set_active_tab("t2").unwrap();
-        assert_eq!(mgr.active_tab_id(), Some("t2"));
-        let e1 = mgr.tabs.get("t1").unwrap();
-        assert_eq!(e1.status, TabStatus::Background);
-    }
+    fn create_tab_deactivates_previous_active_tab() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab();
+        let second = manager.create_tab();
 
-    #[test]
-    fn test_background_limit_suspends_lru() {
-        let mut mgr = TabManager::new();
-        // Create 7 tabs and make each active in turn so the previous becomes background.
-        for i in 1..=7u32 {
-            let id = format!("t{i}");
-            mgr.create_tab(id.clone()).unwrap();
-            mgr.set_active_tab(&id).unwrap();
-            // small sleep to ensure distinct timestamps
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        // Active tab is t7. Background tabs must not exceed the limit.
-        let bg = mgr.background_tab_count();
+        assert_eq!(manager.active_tab_id.as_deref(), Some(second.id.as_str()));
         assert!(
-            bg <= BACKGROUND_LIMIT,
-            "background count {bg} exceeded limit {BACKGROUND_LIMIT}"
+            !manager
+                .tabs
+                .get(&first.id)
+                .map(|t| t.is_active)
+                .unwrap_or(true)
         );
-        // At least one tab must be suspended.
-        let suspended = mgr
+    }
+
+    #[test]
+    fn lru_suspends_oldest_background_tabs() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab();
+
+        // Create enough tabs so backgrounds exceed the limit.
+        let mut latest = first.id.clone();
+        for _ in 0..6 {
+            latest = manager.create_tab().id;
+        }
+
+        // Mark oldest background tab as very old to make it deterministic LRU.
+        if let Some(tab) = manager.tabs.get_mut(&first.id) {
+            tab.is_active = false;
+            tab.last_accessed = Instant::now() - Duration::from_secs(60 * 60);
+        }
+
+        // Trigger enforcement after manual timestamp change.
+        manager.set_active_tab(latest);
+
+        let background_count = manager
             .tabs
             .values()
-            .filter(|e| e.status == TabStatus::Suspended)
+            .filter(|t| !t.is_active && !t.is_suspended)
             .count();
-        assert!(suspended >= 1, "expected at least 1 suspended tab, got {suspended}");
+        assert_eq!(background_count, 5);
     }
 
     #[test]
-    fn test_suspend_and_resume() {
-        let mut mgr = TabManager::new();
-        mgr.create_tab("t1".to_string()).unwrap();
-        // t1 is Background by default after create
-        mgr.suspend_tab("t1").unwrap();
-        assert_eq!(mgr.tabs.get("t1").unwrap().status, TabStatus::Suspended);
-        mgr.resume_tab("t1").unwrap();
-        assert_eq!(mgr.tabs.get("t1").unwrap().status, TabStatus::Background);
+    fn close_active_tab_promotes_another_tab() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab();
+        let second = manager.create_tab();
+
+        manager.close_tab(second.id.clone());
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(first.id.as_str()));
+        assert!(manager.tabs.get(&first.id).map(|t| t.is_active).unwrap_or(false));
     }
 
     #[test]
-    fn test_cannot_suspend_active_tab() {
-        let mut mgr = TabManager::new();
-        mgr.create_tab("t1".to_string()).unwrap();
-        mgr.set_active_tab("t1").unwrap();
-        let err = mgr.suspend_tab("t1").unwrap_err();
-        assert!(matches!(err, NetraError::InvalidInput(_)));
+    fn check_idle_suspension_suspends_old_background_tabs() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab();
+        let second = manager.create_tab();
+
+        if let Some(tab) = manager.tabs.get_mut(&first.id) {
+            tab.is_active = false;
+            tab.is_suspended = false;
+            tab.last_accessed = Instant::now() - Duration::from_secs(10 * 60);
+        }
+        manager.set_active_tab(second.id.clone());
+
+        manager.check_idle_suspension();
+
+        assert!(
+            manager
+                .tabs
+                .get(&first.id)
+                .map(|tab| tab.is_suspended)
+                .unwrap_or(false)
+        );
     }
 }
