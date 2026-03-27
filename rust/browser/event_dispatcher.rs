@@ -14,12 +14,12 @@ pub struct EventDispatcher {
     /// Callback arguments:
     /// - event type
     /// - payload
-    pub handler: Arc<dyn Fn(String, String)>,
+    pub handler: Arc<dyn Fn(String, String) + Send + Sync>,
 }
 
 impl EventDispatcher {
     /// Creates a new event dispatcher with the provided forwarding handler.
-    pub fn new(handler: Arc<dyn Fn(String, String)>) -> Self {
+    pub fn new(handler: Arc<dyn Fn(String, String) + Send + Sync>) -> Self {
         Self { handler }
     }
 

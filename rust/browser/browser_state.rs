@@ -1,5 +1,6 @@
 use crate::browser::navigation_controller::NavigationController;
-use crate::browser::tab_manager::{Tab, TabId, TabManager};
+use crate::browser::tab_manager::TabManager;
+use crate::core::entities::tab::{Tab, TabId};
 
 /// Represents native window geometry tracked by the Rust browser core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +72,22 @@ impl BrowserState {
     /// Returns the normalized URL when an active tab exists, otherwise `None`.
     pub fn navigate(&mut self, input: String) -> Option<String> {
         let active_tab_id = self.get_active_tab_id()?;
-        Some(self.navigation_controller.navigate(active_tab_id, input))
+        let url = self
+            .navigation_controller
+            .navigate(active_tab_id.clone(), input);
+        let can_go_back = self
+            .navigation_controller
+            .can_go_back(active_tab_id.clone());
+        let can_go_forward = self
+            .navigation_controller
+            .can_go_forward(active_tab_id.clone());
+        self.tab_manager.update_navigation_state(
+            &active_tab_id,
+            url.clone(),
+            can_go_back,
+            can_go_forward,
+        );
+        Some(url)
     }
 
     /// Requests backward navigation on the active tab via
@@ -80,7 +96,20 @@ impl BrowserState {
     /// Returns the resolved URL when possible, otherwise `None`.
     pub fn go_back(&mut self) -> Option<String> {
         let active_tab_id = self.get_active_tab_id()?;
-        self.navigation_controller.go_back(active_tab_id)
+        let url = self.navigation_controller.go_back(active_tab_id.clone())?;
+        let can_go_back = self
+            .navigation_controller
+            .can_go_back(active_tab_id.clone());
+        let can_go_forward = self
+            .navigation_controller
+            .can_go_forward(active_tab_id.clone());
+        self.tab_manager.update_navigation_state(
+            &active_tab_id,
+            url.clone(),
+            can_go_back,
+            can_go_forward,
+        );
+        Some(url)
     }
 
     /// Requests forward navigation on the active tab via
@@ -89,7 +118,20 @@ impl BrowserState {
     /// Returns the resolved URL when possible, otherwise `None`.
     pub fn go_forward(&mut self) -> Option<String> {
         let active_tab_id = self.get_active_tab_id()?;
-        self.navigation_controller.go_forward(active_tab_id)
+        let url = self.navigation_controller.go_forward(active_tab_id.clone())?;
+        let can_go_back = self
+            .navigation_controller
+            .can_go_back(active_tab_id.clone());
+        let can_go_forward = self
+            .navigation_controller
+            .can_go_forward(active_tab_id.clone());
+        self.tab_manager.update_navigation_state(
+            &active_tab_id,
+            url.clone(),
+            can_go_back,
+            can_go_forward,
+        );
+        Some(url)
     }
 
     /// Returns the current tab snapshot from [TabManager].

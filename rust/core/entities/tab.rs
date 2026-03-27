@@ -1,19 +1,27 @@
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
+
+/// Stable identifier used to address tabs across the Rust browser core.
+pub type TabId = String;
 
 /// Represents an entity modeling a distinct browser tab state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tab {
-    pub id: String,
+    pub id: TabId,
     pub title: String,
     pub url: String,
     pub is_active: bool,
     pub is_loading: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
+    pub is_suspended: bool,
+    #[serde(skip, default = "Instant::now")]
+    pub last_accessed: Instant,
 }
 
 impl Tab {
-    pub fn new(id: String) -> Self {
+    pub fn new(id: TabId) -> Self {
         Self {
             id,
             title: String::new(),
@@ -22,6 +30,8 @@ impl Tab {
             is_loading: false,
             can_go_back: false,
             can_go_forward: false,
+            is_suspended: false,
+            last_accessed: Instant::now(),
         }
     }
 

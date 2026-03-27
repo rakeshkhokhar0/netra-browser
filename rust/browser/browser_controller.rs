@@ -1,6 +1,10 @@
+use std::sync::{Arc, Mutex};
+
+use once_cell::sync::Lazy;
+
 use crate::browser::browser_state::{BrowserState, WindowBounds};
-use crate::browser::tab_manager::{Tab, TabId};
 use crate::core::events::event_bus::{Event, EventBus};
+use crate::core::entities::tab::{Tab, TabId};
 
 /// Central synchronous orchestrator for the browser core.
 ///
@@ -19,6 +23,15 @@ pub struct BrowserController {
     pub state: BrowserState,
     /// Internal synchronous event bus.
     pub event_bus: EventBus,
+}
+
+/// Shared global browser controller instance used by FFI-facing entry points.
+static BROWSER_CONTROLLER: Lazy<Arc<Mutex<BrowserController>>> =
+    Lazy::new(|| Arc::new(Mutex::new(BrowserController::new())));
+
+/// Returns the shared browser controller singleton.
+pub fn get_browser_controller() -> Arc<Mutex<BrowserController>> {
+    Arc::clone(&BROWSER_CONTROLLER)
 }
 
 impl BrowserController {
@@ -106,7 +119,7 @@ impl BrowserController {
     }
 
     /// Registers a synchronous event subscriber by delegating to [EventBus].
-    pub fn subscribe(&mut self, handler: Box<dyn Fn(&Event)>) {
+    pub fn subscribe(&mut self, handler: Box<dyn Fn(&Event) + Send + Sync>) {
         self.event_bus.subscribe(handler);
     }
 }

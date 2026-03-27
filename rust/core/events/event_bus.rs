@@ -35,7 +35,7 @@ pub struct EventBus {
     /// Subscriber registry for event handlers.
     ///
     /// Each handler is an opaque closure that receives events by reference.
-    pub subscribers: Vec<Box<dyn Fn(&Event)>>,
+    pub subscribers: Vec<Box<dyn Fn(&Event) + Send + Sync>>,
 }
 
 impl EventBus {
@@ -50,7 +50,7 @@ impl EventBus {
     ///
     /// The handler is appended to the registry and will receive all future
     /// published events.
-    pub fn subscribe(&mut self, handler: Box<dyn Fn(&Event)>) {
+    pub fn subscribe(&mut self, handler: Box<dyn Fn(&Event) + Send + Sync>) {
         self.subscribers.push(handler);
     }
 

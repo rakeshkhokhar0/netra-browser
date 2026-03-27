@@ -2,44 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
-
-/// Stable identifier used to address tabs across the browser core.
-pub type TabId = String;
-
-/// In-memory browser tab state owned by the Rust core.
-///
-/// This model intentionally contains only engine/domain state and no UI
-/// concerns. Every tab is tracked by [TabManager] and mutated only through
-/// lifecycle operations.
-#[derive(Debug, Clone)]
-pub struct Tab {
-    pub id: TabId,
-    pub url: String,
-    pub title: String,
-    pub is_active: bool,
-    pub is_loading: bool,
-    pub is_suspended: bool,
-    pub can_go_back: bool,
-    pub can_go_forward: bool,
-    pub last_accessed: Instant,
-}
-
-impl Tab {
-    /// Creates a new tab with default browser-visible state.
-    fn new(id: TabId) -> Self {
-        Self {
-            id,
-            url: "about:blank".to_string(),
-            title: String::new(),
-            is_active: false,
-            is_loading: false,
-            is_suspended: false,
-            can_go_back: false,
-            can_go_forward: false,
-            last_accessed: Instant::now(),
-        }
-    }
-}
+use crate::core::entities::tab::{Tab, TabId};
 
 /// Owns tab lifecycle, active-tab transitions, suspension, and LRU background
 /// memory policy for the browser engine.
@@ -74,7 +37,17 @@ impl TabManager {
         let id = Uuid::new_v4().to_string();
         self.deactivate_current_active();
 
-        let mut tab = Tab::new(id.clone());
+        let mut tab = Tab {
+            id: id.clone(),
+            url: "about".to_string(),
+            title: String::new(),
+            is_active: false,
+            is_loading: false,
+            is_suspended: false,
+            can_go_back: false,
+            can_go_forward: false,
+            last_accessed: Instant::now(),
+        };
         tab.is_active = true;
         tab.last_accessed = Instant::now();
 
@@ -156,6 +129,25 @@ impl TabManager {
     /// modules can read active state without scanning all tab records.
     pub fn get_active_tab_id(&self) -> Option<TabId> {
         self.active_tab_id.clone()
+    }
+
+    /// Synchronizes navigation-derived state onto an existing tab.
+    ///
+    /// This keeps [TabManager] as the single source of truth for tab-visible
+    /// state while allowing higher-level coordinators to mirror history and
+    /// URL changes computed by other browser modules.
+    pub fn update_navigation_state(
+        &mut self,
+        tab_id: &str,
+        url: String,
+        can_go_back: bool,
+        can_go_forward: bool,
+    ) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.url = url;
+            tab.can_go_back = can_go_back;
+            tab.can_go_forward = can_go_forward;
+        }
     }
 
     /// Suspends a tab when it is a non-active, non-suspended background tab
