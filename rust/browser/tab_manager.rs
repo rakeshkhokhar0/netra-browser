@@ -41,24 +41,6 @@ impl Tab {
     }
 }
 
-/// Lifecycle events emitted by [TabManager].
-///
-/// The manager only emits these events and does not consume or dispatch them
-/// to handlers directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabEvent {
-    TabCreated(TabId),
-    TabClosed(TabId),
-    TabSwitched(TabId),
-    TabSuspended(TabId),
-    TabResumed(TabId),
-}
-
-/// Emits a tab lifecycle event.
-///
-/// This is an integration stub; a future event bus will consume these events.
-pub fn emit_event(_event: TabEvent) {}
-
 /// Owns tab lifecycle, active-tab transitions, suspension, and LRU background
 /// memory policy for the browser engine.
 ///
@@ -100,7 +82,6 @@ impl TabManager {
         self.active_tab_id = Some(id.clone());
 
         self.enforce_background_tab_limit();
-        emit_event(TabEvent::TabCreated(id));
         tab
     }
 
@@ -113,8 +94,6 @@ impl TabManager {
         if self.tabs.remove(&tab_id).is_none() {
             return;
         }
-
-        emit_event(TabEvent::TabClosed(tab_id.clone()));
 
         if !was_active {
             return;
@@ -164,7 +143,6 @@ impl TabManager {
 
         self.active_tab_id = Some(tab_id.clone());
         self.enforce_background_tab_limit();
-        emit_event(TabEvent::TabSwitched(tab_id));
     }
 
     /// Returns a cloned snapshot of all tracked tabs.
@@ -193,7 +171,6 @@ impl TabManager {
 
         tab.is_suspended = true;
         tab.is_loading = false;
-        emit_event(TabEvent::TabSuspended(tab_id));
     }
 
     /// Resumes a suspended tab and emits [TabEvent::TabResumed].
@@ -220,8 +197,6 @@ impl TabManager {
             tab.is_loading = true;
             tab.last_accessed = Instant::now();
         }
-
-        emit_event(TabEvent::TabResumed(tab_id));
     }
 
     /// Suspends idle background tabs that have been inactive for more than

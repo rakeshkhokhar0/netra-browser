@@ -14,23 +14,6 @@ pub struct WindowBounds {
     pub y: i32,
 }
 
-/// High-level browser-state events emitted by [BrowserState].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BrowserEvent {
-    /// Emitted when the active tab changes.
-    ActiveTabChanged(TabId),
-    /// Emitted when the set of tabs changes.
-    TabsUpdated,
-    /// Emitted when tracked window bounds are updated.
-    WindowResized(WindowBounds),
-}
-
-/// Emits a browser-state event.
-///
-/// This is a temporary integration stub. A future event bus will consume and
-/// dispatch these events to interested subsystems.
-fn emit_event(_event: BrowserEvent) {}
-
 /// Global, synchronous browser state coordinator.
 ///
 /// This type is the state-layer entry point for tab and navigation operations.
@@ -68,39 +51,19 @@ impl BrowserState {
         }
     }
 
-    /// Creates a new tab through [TabManager], then emits:
-    /// - [BrowserEvent::TabsUpdated]
-    /// - [BrowserEvent::ActiveTabChanged]
+    /// Creates a new tab through [TabManager].
     pub fn create_tab(&mut self) -> Tab {
-        let tab = self.tab_manager.create_tab();
-        emit_event(BrowserEvent::TabsUpdated);
-        emit_event(BrowserEvent::ActiveTabChanged(tab.id.clone()));
-        tab
+        self.tab_manager.create_tab()
     }
 
-    /// Closes a tab through [TabManager], emits [BrowserEvent::TabsUpdated],
-    /// and emits [BrowserEvent::ActiveTabChanged] if the active tab changed to
-    /// another tab.
+    /// Closes a tab through [TabManager].
     pub fn close_tab(&mut self, tab_id: TabId) {
-        let active_before = self.get_active_tab_id();
         self.tab_manager.close_tab(tab_id);
-        emit_event(BrowserEvent::TabsUpdated);
-
-        let active_after = self.get_active_tab_id();
-        if active_before != active_after {
-            if let Some(active_tab_id) = active_after {
-                emit_event(BrowserEvent::ActiveTabChanged(active_tab_id));
-            }
-        }
     }
 
-    /// Sets the active tab through [TabManager], then emits
-    /// [BrowserEvent::ActiveTabChanged] for the resulting active tab.
+    /// Sets the active tab through [TabManager].
     pub fn set_active_tab(&mut self, tab_id: TabId) {
         self.tab_manager.set_active_tab(tab_id);
-        if let Some(active_tab_id) = self.get_active_tab_id() {
-            emit_event(BrowserEvent::ActiveTabChanged(active_tab_id));
-        }
     }
 
     /// Navigates the active tab using [NavigationController].
@@ -141,10 +104,9 @@ impl BrowserState {
         self.tab_manager.get_active_tab_id()
     }
 
-    /// Updates tracked window bounds and emits [BrowserEvent::WindowResized].
+    /// Updates tracked window bounds.
     pub fn set_window_bounds(&mut self, bounds: WindowBounds) {
         self.window_bounds = bounds;
-        emit_event(BrowserEvent::WindowResized(bounds));
     }
 }
 

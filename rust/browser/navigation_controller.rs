@@ -15,23 +15,6 @@ pub struct History {
     pub current_index: usize,
 }
 
-/// Navigation lifecycle events emitted by [NavigationController].
-///
-/// These events are intentionally transport-agnostic and are prepared for
-/// future event-bus wiring in the Rust core.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NavigationEvent {
-    /// Emitted when a normalized navigation target has been resolved.
-    NavigationRequested(TabId, String),
-    /// Emitted when navigation is considered complete.
-    NavigationCompleted(TabId, String),
-}
-
-/// Emits a navigation event.
-///
-/// This is a temporary stub for future integration with the Rust event bus.
-fn emit_event(_event: NavigationEvent) {}
-
 /// Owns tab-scoped navigation history and URL normalization behavior.
 ///
 /// Responsibilities:
@@ -69,8 +52,6 @@ impl NavigationController {
     /// - forward history is truncated before pushing a new entry
     /// - pushed URL becomes the active index
     ///
-    /// Emits:
-    /// - [NavigationEvent::NavigationRequested]
     pub fn navigate(&mut self, tab_id: TabId, input: String) -> String {
         let final_url = Self::normalize_input(input);
         let history = self.histories.entry(tab_id.clone()).or_insert(History {
@@ -84,11 +65,6 @@ impl NavigationController {
 
         history.entries.push(final_url.clone());
         history.current_index = history.entries.len() - 1;
-
-        emit_event(NavigationEvent::NavigationRequested(
-            tab_id,
-            final_url.clone(),
-        ));
 
         final_url
     }
@@ -104,12 +80,7 @@ impl NavigationController {
         }
 
         history.current_index -= 1;
-        let url = history.entries.get(history.current_index).cloned()?;
-        emit_event(NavigationEvent::NavigationRequested(
-            tab_id,
-            url.clone(),
-        ));
-        Some(url)
+        history.entries.get(history.current_index).cloned()
     }
 
     /// Moves the history cursor one step forward for the provided tab.
@@ -123,12 +94,7 @@ impl NavigationController {
         }
 
         history.current_index += 1;
-        let url = history.entries.get(history.current_index).cloned()?;
-        emit_event(NavigationEvent::NavigationRequested(
-            tab_id,
-            url.clone(),
-        ));
-        Some(url)
+        history.entries.get(history.current_index).cloned()
     }
 
     /// Indicates whether backward navigation is currently possible for a tab.
