@@ -1,58 +1,107 @@
 # Netra Rust Core
 
-This folder contains the Rust side of Netra Browser: FFI entry points, core
-domain modules, privacy/network pipeline scaffolding, and service/storage
-surfaces.
+The `rust/` directory contains the synchronous browser core for Netra Browser.
+
+## Role In The System
+
+- Owns browser logic and browser state
+- Owns tab lifecycle, navigation, and event flow
+- Exposes FFI-ready controller surfaces
+- Stays fully decoupled from UI concerns
+
+## Core Modules
+
+- `browser/`
+  - `TabManager`
+    - single source of truth for tab state
+    - owns lifecycle, active-tab rules, suspension, and LRU behavior
+  - `NavigationController`
+    - single source of truth for per-tab history
+    - owns URL normalization and navigation stack behavior
+  - `BrowserState`
+    - coordinates tab state and navigation state
+    - syncs navigation results back into tab state
+  - `BrowserController`
+    - single entry point for browser operations
+    - publishes integration events
+  - `EventDispatcher`
+    - forwards internal events toward the FFI boundary
+- `core/`
+  - shared entities, errors, value objects, and the unified `EventBus`
+- `ffi/`
+  - Rust APIs exposed through `flutter_rust_bridge`
+- `network/`
+  - request/response interception pipeline surfaces
+- `privacy/`
+  - privacy modules such as ad blocking, DNS, fingerprint, and WebRTC
+- `services/`
+  - bookmarks, downloads, filter lists, history, and settings services
+- `storage/`
+  - persistence, migrations, and storage helpers
+
+## Final Architecture After Phase 2
+
+- Rust owns all logic and all browser-domain state
+- The core is deterministic and synchronous
+- One unified event system exists through `EventBus`
+- One unified `Tab` type exists through `crate::core::entities::tab::Tab`
+- No duplicate state systems are used for tabs or history
+
+## Tab System
+
+- Multi-tab support is implemented
+- Only one tab is active at a time
+- Background tabs are managed using LRU rules
+- At most 5 background tabs remain active
+- Oldest background tabs are suspended when limits are exceeded
+- Idle background tabs are suspended after 5 minutes
+- Suspended tabs are resumed on activation
+
+## Navigation System
+
+- URL normalization is handled in Rust
+- Inputs without a scheme are normalized to `https://`
+- Inputs with spaces are treated as search queries
+- Search queries are converted to Google search URLs
+- History is stored per tab
+- Back and forward navigation are supported
+- Forward history is cleared on new navigation
+
+## Event System
+
+- `EventBus` is the single internal event pipeline
+- Supported events include:
+  - `TabCreated`
+  - `TabClosed`
+  - `TabSuspended`
+  - `TabResumed`
+  - `NavigationCompleted`
+  - `BlockedRequest`
+- `EventDispatcher` converts internal events into simple FFI payloads
+
+## State Rules
+
+- `TabManager` is the single source of truth for tabs
+- `NavigationController` is the single source of truth for history
+- `BrowserState` coordinates, but does not duplicate ownership
+- Flutter does not own Rust browser-domain state
 
 ## Current Status
 
-- Rust library builds as `cdylib`/`staticlib` and is loaded by the Windows app.
-- FFI smoke-test exports are implemented and callable from Dart.
-- Core browser controller and tab manager scaffolding are in place.
-- Many privacy/service/storage modules are currently documented placeholders.
+Phase 2 is complete.
 
-## Subfolder Ownership
+Implemented:
 
-- `ffi/`
-  - Public Rust FFI boundary and API entry points consumed by Flutter/native.
-  - Includes smoke-test exports and browser API delegation.
-- `core/`
-  - Domain entities, typed errors, events, and value objects.
-- `browser/`
-  - Browser controller/tab/session/navigation orchestration primitives.
-  - Current implementation keeps minimal in-memory tab state and validation.
-- `network/`
-  - Request/response interception and request-pipeline surfaces.
-  - Structure exists; implementation is staged.
-- `privacy/`
-  - Adblock, DNS, fingerprint, and WebRTC protection modules.
-  - Mostly scaffolding at this stage.
-- `services/`
-  - Feature service boundaries (bookmarks, history, downloads, settings,
-    filter lists).
-  - Mostly scaffolding at this stage.
-- `storage/`
-  - SQLite, migrations, and encryption surfaces for persisted state.
-  - Structural groundwork present; implementation is staged.
-- `platform/`
-  - Platform-specific bridge points (windows/android/ios modules).
-- `utils/`
-  - Shared configuration, error helpers, and logger surfaces.
-- `target/`
-  - Cargo build output directory (generated artifacts, not source ownership).
+- Multi-tab system
+- Navigation engine
+- Global state coordination
+- Unified event architecture
+- FFI-ready global browser controller access
 
-## Work Done In This Layer
+## Phase 3 Focus
 
-- `Cargo.toml` configured for shared library output used by Windows runner.
-- FFI exports:
-  - `netra_connection_smoke_test`
-  - `netra_connection_message`
-- Browser API entry points validate inputs and delegate into browser controller.
-- Typed `NetraError` model implemented and used across controller paths.
-- Tab manager includes active/background/suspended state logic with tests.
-
-## Known Gaps
-
-- Filtering/privacy/service/storage modules need full behavior implementation.
-- Rust request decision is not yet fully connected to enforce blocking in
-  production flow.
+- Wire Flutter UI to the stabilized Rust core
+- Handle event streams in Dart
+- Connect WebView2 control flow through the native bridge
+- Add UI sync for loading and navigation state
+- Continue advanced browser features
