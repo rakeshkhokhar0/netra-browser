@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::core::entities::browser_event::BrowserEvent;
 use crate::core::events::event_bus::{Event, EventBus};
 
 /// Bridges internal browser events into a simple string-based callback format
@@ -43,6 +44,7 @@ impl EventDispatcher {
     /// consumers can deserialize them without Rust-specific knowledge.
     fn map_event(event: &Event) -> (String, String) {
         match event {
+            Event::BrowserEvent(browser_event) => Self::map_browser_event(browser_event),
             Event::TabCreated(id) => ("TabCreated".to_string(), id.clone()),
             Event::TabClosed(id) => ("TabClosed".to_string(), id.clone()),
             Event::TabSuspended(id) => ("TabSuspended".to_string(), id.clone()),
@@ -52,6 +54,86 @@ impl EventDispatcher {
                 format!("{tab_id}|{url}"),
             ),
             Event::BlockedRequest(url) => ("BlockedRequest".to_string(), url.clone()),
+        }
+    }
+
+    /// Converts a typed native [BrowserEvent] into a stable outward-facing
+    /// string event type and payload pair.
+    fn map_browser_event(event: &BrowserEvent) -> (String, String) {
+        match event {
+            BrowserEvent::FrameCreated { tab_id } => {
+                ("FrameCreated".to_string(), tab_id.clone())
+            }
+            BrowserEvent::FrameDestroyed { tab_id } => {
+                ("FrameDestroyed".to_string(), tab_id.clone())
+            }
+            BrowserEvent::TitleChanged { tab_id, title } => {
+                ("TitleChanged".to_string(), format!("{tab_id}|{title}"))
+            }
+            BrowserEvent::UrlChanged { tab_id, url } => {
+                ("UrlChanged".to_string(), format!("{tab_id}|{url}"))
+            }
+            BrowserEvent::NavigationStarted {
+                tab_id,
+                url,
+                is_same_document,
+            } => (
+                "NavigationStarted".to_string(),
+                format!("{tab_id}|{url}|{is_same_document}"),
+            ),
+            BrowserEvent::NavigationCompleted {
+                tab_id,
+                url,
+                is_same_document,
+            } => (
+                "NavigationCompletedNative".to_string(),
+                format!("{tab_id}|{url}|{is_same_document}"),
+            ),
+            BrowserEvent::NavigationFailed {
+                tab_id,
+                url,
+                error_code,
+                description,
+            } => (
+                "NavigationFailed".to_string(),
+                format!("{tab_id}|{url}|{error_code}|{description}"),
+            ),
+            BrowserEvent::LoadStarted { tab_id } => {
+                ("LoadStarted".to_string(), tab_id.clone())
+            }
+            BrowserEvent::LoadFinished { tab_id } => {
+                ("LoadFinished".to_string(), tab_id.clone())
+            }
+            BrowserEvent::HistoryStateChanged {
+                tab_id,
+                can_go_back,
+                can_go_forward,
+            } => (
+                "HistoryStateChanged".to_string(),
+                format!("{tab_id}|{can_go_back}|{can_go_forward}"),
+            ),
+            BrowserEvent::RequestBlocked {
+                tab_id,
+                url,
+                resource_type,
+            } => (
+                "RequestBlockedNative".to_string(),
+                format!("{tab_id}|{url}|{resource_type}"),
+            ),
+            BrowserEvent::ConsoleMessage {
+                tab_id,
+                level,
+                message,
+                source_id,
+                line_number,
+            } => (
+                "ConsoleMessage".to_string(),
+                format!(
+                    "{tab_id}|{level}|{message}|{}|{}",
+                    source_id.clone().unwrap_or_default(),
+                    line_number.map(|value| value.to_string()).unwrap_or_default()
+                ),
+            ),
         }
     }
 }

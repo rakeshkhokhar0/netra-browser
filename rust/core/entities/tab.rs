@@ -8,14 +8,27 @@ pub type TabId = String;
 /// Represents an entity modeling a distinct browser tab state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tab {
+    /// Stable identifier used across Rust, Flutter, and the native host.
     pub id: TabId,
+    /// Current document title associated with the tab.
     pub title: String,
+    /// Current visible URL for the tab.
     pub url: String,
+    /// Whether this tab is currently the active tab.
     pub is_active: bool,
+    /// Whether the tab is currently loading content.
     pub is_loading: bool,
+    /// Whether backward navigation is currently available.
     pub can_go_back: bool,
+    /// Whether forward navigation is currently available.
     pub can_go_forward: bool,
+    /// Whether the tab has been suspended by background-tab policy.
     pub is_suspended: bool,
+    /// Number of intercepted requests blocked for this tab.
+    ///
+    /// This counter is updated from native request-blocked events routed back
+    /// through the Rust event pipeline.
+    pub blocked_count: u32,
     #[serde(skip, default = "Instant::now")]
     pub last_accessed: Instant,
 }
@@ -31,6 +44,7 @@ impl Tab {
             can_go_back: false,
             can_go_forward: false,
             is_suspended: false,
+            blocked_count: 0,
             last_accessed: Instant::now(),
         }
     }
@@ -54,5 +68,9 @@ impl Tab {
 
     pub fn update_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    pub fn increment_blocked_count(&mut self) {
+        self.blocked_count = self.blocked_count.saturating_add(1);
     }
 }

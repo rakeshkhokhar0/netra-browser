@@ -1,63 +1,59 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:netra_browser/netra/di/modules/engine_module.dart';
 import 'package:netra_browser/netra/engine/adapters/webview2/webview2_adapter.dart';
 import 'package:netra_browser/netra/engine/models/browser_event.dart';
+import 'package:netra_browser/netra/ffi/bridge.dart';
 import 'package:netra_browser/netra/shared/utils/url_utils.dart';
 
 import '../models/tab_state.dart';
-import 'tab_provider.dart';
 
-/// Immutable Riverpod state owned by [BrowserProvider].
+/// Immutable Riverpod state exposed by [BrowserProvider].
 ///
-/// This model represents the shell-side browser snapshot that Flutter widgets
-/// can observe without depending on the Rust or native bridge layers
-/// directly. It contains only presentation-facing state derived from browser
-/// events and command lifecycle updates.
+/// This state is intentionally read-only from Flutter's perspective. The tab
+/// list and active-tab information are refreshed from Rust snapshots rather
+/// than being rebuilt locally in Dart. The only shell-local field retained
+/// here is [errorMessage], which is used solely for UI feedback.
 class BrowserProviderState {
-  /// Creates an immutable browser-provider state snapshot.
+  /// Creates an immutable browser-state snapshot for the UI layer.
   const BrowserProviderState({
     this.tabs = const <TabState>[],
     this.activeTabId,
-    this.isLoading = false,
     this.errorMessage,
-    this.blockedRequestCount = 0,
   });
 
-  /// Ordered list of browser tabs currently known to the Flutter layer.
+  /// Ordered list of tabs mirrored from the Rust browser core.
   final List<TabState> tabs;
 
-  /// Identifier of the tab currently treated as active by the UI layer.
+  /// Identifier of the currently active tab mirrored from Rust state.
   final String? activeTabId;
 
-  /// Whether the browser is currently processing a loading/navigation action.
-  final bool isLoading;
-
-  /// Latest error message surfaced while processing browser commands or events.
+  /// Latest non-fatal command or event error surfaced to the UI.
   final String? errorMessage;
 
-  /// Count of blocked network requests observed from the event stream.
-  final int blockedRequestCount;
+  /// Whether the currently active tab is loading.
+  bool get isLoading => tabs.any((tab) => tab.isActive && tab.isLoading);
+
+  /// Total blocked-request count aggregated across all tabs.
+  int get blockedRequestCount =>
+      tabs.fold<int>(0, (sum, tab) => sum + tab.blockedCount);
 
   /// Returns a new immutable state snapshot with selected fields replaced.
   BrowserProviderState copyWith({
     List<TabState>? tabs,
     String? activeTabId,
     bool clearActiveTabId = false,
-    bool? isLoading,
     String? errorMessage,
     bool clearErrorMessage = false,
-    int? blockedRequestCount,
   }) {
     return BrowserProviderState(
       tabs: tabs ?? this.tabs,
       activeTabId: clearActiveTabId ? null : (activeTabId ?? this.activeTabId),
-      isLoading: isLoading ?? this.isLoading,
       errorMessage: clearErrorMessage
           ? null
           : (errorMessage ?? this.errorMessage),
-      blockedRequestCount: blockedRequestCount ?? this.blockedRequestCount,
     );
   }
 }
@@ -70,109 +66,99 @@ class BrowserProviderState {
 final browserStateProvider =
     StateNotifierProvider<BrowserProvider, BrowserProviderState>((ref) {
       final engine = ref.read(engineProvider) as WebView2Adapter;
-      final notifier = BrowserProvider(ref, engine);
-      ref.onDispose(() {
-        notifier.dispose();
-      });
+      final notifier = BrowserProvider(engine);
+      ref.onDispose(notifier.dispose);
       return notifier;
     });
 
 /// Exposes the [BrowserProvider] notifier instance used by command-oriented
 /// UI code.
-///
-/// This compatibility provider lets existing widgets call browser commands via
-/// `ref.read(browserProvider)` while the observable state lives in
-/// [browserStateProvider].
 final browserProvider = Provider<BrowserProvider>(
   (ref) => ref.read(browserStateProvider.notifier),
 );
 
-/// Manages browser state for the Flutter shell using Riverpod.
+/// Refresh-driven browser provider for the Flutter shell.
 ///
 /// Responsibilities:
-/// - stores the tab list and active-tab identifier
-/// - tracks global loading and error state
-/// - counts blocked requests reported by the event stream
-/// - listens to typed browser events emitted by the engine layer
-///
-/// The provider does not contain UI code and does not call the low-level FFI
-/// bridge directly. It uses the engine adapter as the single command/event
-/// boundary for the Flutter layer.
+/// - routes browser commands through the Rust bridge
+/// - listens to typed adapter events only to trigger Rust-state refreshes
+/// - exposes a Flutter-friendly immutable state object derived from Rust
+/// - avoids any local tab-list ownership or browser-state mutation logic
 class BrowserProvider extends StateNotifier<BrowserProviderState> {
-  /// Creates a browser provider backed by the given engine adapter.
-  BrowserProvider(this._ref, this._engine)
+  /// Creates a browser provider backed by the given event adapter.
+  BrowserProvider(this._engine)
     : super(const BrowserProviderState()) {
     _eventSubscription = _engine.events.listen(
       _handleEvent,
       onError: _handleStreamError,
     );
+    _scheduleRefresh();
   }
 
-  final Ref _ref;
-
-  /// Engine adapter used for browser commands and event delivery.
   final WebView2Adapter _engine;
+  final RustBridge _rust = RustBridge.instance;
 
   StreamSubscription<BrowserEvent>? _eventSubscription;
 
-  /// Navigates the specified tab to the requested URL.
-  ///
-  /// The provider updates local loading state before delegating the command to
-  /// the engine. Final URL synchronization is completed when the matching
-  /// navigation event arrives.
+  /// Navigates the specified tab to the requested URL via Rust control.
   Future<void> navigate(String tabId, String url) async {
     final normalizedInput = normalizeNavigationInput(url);
     if (normalizedInput.isEmpty) {
       return;
     }
 
-    _setCommandLoading(tabId);
     try {
-      await _engine.navigate(tabId, normalizedInput);
+      _logDebug('loadUrl -> Rust state refresh');
+      await _rust.loadUrl(tabId: tabId, url: normalizedInput);
+      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
     }
   }
 
-  /// Requests backward navigation for the specified tab.
+  /// Requests backward navigation for the specified tab via Rust control.
   Future<void> goBack(String tabId) async {
-    _setCommandLoading(tabId);
     try {
-      await _engine.goBack(tabId);
+      _logDebug('goBack -> Rust state refresh');
+      await _rust.goBack(tabId: tabId);
+      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
     }
   }
 
-  /// Requests forward navigation for the specified tab.
+  /// Requests forward navigation for the specified tab via Rust control.
   Future<void> goForward(String tabId) async {
-    _setCommandLoading(tabId);
     try {
-      await _engine.goForward(tabId);
+      _logDebug('goForward -> Rust state refresh');
+      await _rust.goForward(tabId: tabId);
+      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
     }
   }
 
-  /// Requests a reload of the current page for the specified tab.
+  /// Requests a reload of the specified tab via Rust control.
   Future<void> reload(String tabId) async {
-    _setCommandLoading(tabId);
     try {
-      await _engine.reload(tabId);
+      _logDebug('reload -> Rust state refresh');
+      await _rust.reload(tabId: tabId);
+      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
     }
   }
 
-  /// Marks the specified tab as the active visible native browser surface.
+  /// Marks the specified tab as the active visible browser tab.
   Future<void> setActiveTab(String tabId) async {
-    _activateTab(tabId);
     try {
-      await _engine.setActiveTab(tabId);
+      _logDebug('setActiveTab -> Rust state refresh');
+      await _rust.setActiveTab(tabId: tabId);
+      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
@@ -188,7 +174,33 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
     double height,
   ) async {
     try {
-      await _engine.setBounds(tabId, x, y, width, height);
+      await _rust.setBounds(
+        tabId: tabId,
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+      );
+    } catch (error) {
+      _setError(error);
+      rethrow;
+    }
+  }
+
+  /// Refreshes the Flutter-visible browser snapshot from the Rust core.
+  Future<void> refreshState({
+    String? errorMessage,
+    bool clearErrorMessage = false,
+  }) async {
+    try {
+      final rustState = await _rust.getBrowserState();
+      final browserState = _browserStateFromRust(
+        rustState,
+        previousErrorMessage: state.errorMessage,
+        clearErrorMessage: clearErrorMessage,
+        nextErrorMessage: errorMessage,
+      );
+      state = browserState;
     } catch (error) {
       _setError(error);
       rethrow;
@@ -202,330 +214,69 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   }
 
   void _handleEvent(BrowserEvent event) {
-    final type = event.type.toLowerCase();
-
-    switch (type) {
-      case 'tabcreated':
-        _handleTabCreated(event.tabId);
-        break;
-      case 'tabclosed':
-        _handleTabClosed(event.tabId);
-        break;
-      case 'navigationcompleted':
-        if (event is NavigationCompletedBrowserEvent) {
-          _handleNavigationCompleted(
-            event.tabId,
-            event.url,
-            success: event.success,
-          );
-        } else {
-          _handleNavigationCompleted(event.tabId, event.message ?? '');
-        }
-        break;
-      case 'requestblocked':
-        _handleBlockedRequest();
-        break;
-      case 'navigationstarting':
-        if (event is NavigationStartingBrowserEvent) {
-          _markTabLoading(event.tabId, url: event.url);
-        }
-        break;
-      case 'contentloading':
-        if (event is ContentLoadingBrowserEvent) {
-          _markTabLoading(event.tabId);
-        }
-        break;
-      case 'urlchanged':
-        if (event is UrlChangedBrowserEvent) {
-          _updateTab(
-            event.tabId,
-            (tab) => tab.copyWith(url: event.url),
-          );
-        }
-        break;
-      case 'titlechanged':
-        if (event is TitleChangedBrowserEvent) {
-          _updateTab(
-            event.tabId,
-            (tab) => tab.copyWith(title: event.title),
-          );
-        }
-        break;
-      case 'historychanged':
-        if (event is HistoryChangedBrowserEvent) {
-          _updateTab(
-            event.tabId,
-            (tab) => tab.copyWith(
-              canGoBack: event.canGoBack,
-              canGoForward: event.canGoForward,
-            ),
-          );
-        }
-        break;
-      case 'tabcrashed':
-        if (event is TabCrashedBrowserEvent) {
-          _setError('The active tab crashed while rendering content.');
-        }
-        break;
-      default:
-        break;
+    if (event is TabCrashedBrowserEvent) {
+      _scheduleRefresh(
+        errorMessage: 'The active tab crashed while rendering content.',
+      );
+      return;
     }
+
+    _scheduleRefresh(clearErrorMessage: true);
+  }
+
+  void _scheduleRefresh({
+    String? errorMessage,
+    bool clearErrorMessage = false,
+  }) {
+    unawaited(
+      refreshState(
+        errorMessage: errorMessage,
+        clearErrorMessage: clearErrorMessage,
+      ).catchError((Object error, StackTrace stackTrace) {
+        _handleStreamError(error, stackTrace);
+      }),
+    );
   }
 
   void _handleStreamError(Object error, StackTrace stackTrace) {
     _setError(error);
   }
 
-  void _handleTabCreated(String? tabId) {
-    if (tabId == null || tabId.isEmpty) {
-      return;
-    }
-
-    final existingIndex = state.tabs.indexWhere((tab) => tab.id == tabId);
-    final createdTab = TabState(
-      id: tabId,
-      title: '',
-      url: '',
-      isActive: true,
-      isLoading: false,
-      canGoBack: false,
-      canGoForward: false,
-      isSuspended: false,
-    );
-
-    final nextTabs = state.tabs
-        .map((tab) => tab.copyWith(isActive: false))
-        .toList(growable: true);
-
-    if (existingIndex >= 0) {
-      nextTabs[existingIndex] = createdTab;
-    } else {
-      nextTabs.add(createdTab);
-    }
-
-    state = state.copyWith(
-      tabs: nextTabs,
-      activeTabId: _resolveActiveTabId(nextTabs, tabId),
-      isLoading: false,
-      clearErrorMessage: true,
-    );
-  }
-
-  Future<void> _handleTabClosed(String? tabId) async {
-    if (tabId == null || tabId.isEmpty) {
-      return;
-    }
-
-    final nextTabs = state.tabs.where((tab) => tab.id != tabId).toList();
-    if (nextTabs.isEmpty) {
-      final newTabId = await _ref.read(tabProvider).createTab();
-
-      state = state.copyWith(
-        tabs: const <TabState>[],
-        activeTabId: newTabId,
-        isLoading: false,
-        clearErrorMessage: true,
-      );
-
-      return;
-    }
-
-    final nextActiveTabId = state.activeTabId == tabId
-        ? (nextTabs.isNotEmpty ? nextTabs.first.id : null)
-        : state.activeTabId;
-    final normalizedTabs = nextTabs
-        .map(
-          (tab) => tab.copyWith(
-            isActive: tab.id == nextActiveTabId,
-          ),
-        )
-        .toList();
-
-    state = state.copyWith(
-      tabs: normalizedTabs,
-      activeTabId: _resolveActiveTabId(normalizedTabs, nextActiveTabId),
-      clearActiveTabId: nextActiveTabId == null,
-      isLoading: false,
-      clearErrorMessage: true,
-    );
-  }
-
-  void _handleNavigationCompleted(
-    String? tabId,
-    String url, {
-    bool success = true,
-  }) {
-    if (tabId == null || tabId.isEmpty) {
-      return;
-    }
-
-    final normalizedUrl = _normalizeNavigationUrl(tabId, url);
-    final nextTabs = _upsertTab(
-      tabId,
-      (tab) => tab.copyWith(
-        url: normalizedUrl.isEmpty ? tab.url : normalizedUrl,
-        isActive: true,
-        isLoading: false,
-      ),
-    );
-
-    state = state.copyWith(
-      tabs: _markOnlyActive(nextTabs, tabId),
-      activeTabId: _resolveActiveTabId(nextTabs, tabId),
-      isLoading: false,
-      errorMessage: success
-          ? null
-          : _buildNavigationErrorMessage(normalizedUrl),
-      clearErrorMessage: success,
-    );
-  }
-
-  void _handleBlockedRequest() {
-    state = state.copyWith(
-      blockedRequestCount: state.blockedRequestCount + 1,
-    );
-  }
-
-  void _setCommandLoading(String tabId) {
-    final nextTabs = _upsertTab(
-      tabId,
-      (tab) => tab.copyWith(
-        isActive: true,
-        isLoading: true,
-      ),
-    );
-
-    state = state.copyWith(
-      tabs: _markOnlyActive(nextTabs, tabId),
-      activeTabId: _resolveActiveTabId(nextTabs, tabId),
-      isLoading: true,
-      clearErrorMessage: true,
-    );
-  }
-
-  void _activateTab(String tabId) {
-    final shouldClearError = state.activeTabId != tabId;
-    final nextTabs = _upsertTab(
-      tabId,
-      (tab) => tab.copyWith(isActive: true),
-    );
-
-    state = state.copyWith(
-      tabs: _markOnlyActive(nextTabs, tabId),
-      activeTabId: _resolveActiveTabId(nextTabs, tabId),
-      clearErrorMessage: shouldClearError,
-    );
-  }
-
-  void _markTabLoading(String? tabId, {String? url}) {
-    if (tabId == null || tabId.isEmpty) {
-      return;
-    }
-
-    final nextTabs = _upsertTab(
-      tabId,
-      (tab) => tab.copyWith(
-        url: url != null && url.isNotEmpty ? url : tab.url,
-        isActive: true,
-        isLoading: true,
-      ),
-    );
-
-    state = state.copyWith(
-      tabs: _markOnlyActive(nextTabs, tabId),
-      activeTabId: _resolveActiveTabId(nextTabs, tabId),
-      isLoading: true,
-      clearErrorMessage: true,
-    );
-  }
-
-  void _updateTab(String? tabId, TabState Function(TabState tab) transform) {
-    if (tabId == null || tabId.isEmpty) {
-      return;
-    }
-
-    final nextTabs = _upsertTab(tabId, transform);
-    state = state.copyWith(
-      tabs: nextTabs,
-      activeTabId: _resolveActiveTabId(nextTabs, state.activeTabId),
-    );
-  }
-
   void _setError(Object error) {
     state = state.copyWith(
-      isLoading: false,
       errorMessage: error.toString(),
     );
   }
 
-  List<TabState> _upsertTab(
-    String tabId,
-    TabState Function(TabState tab) transform,
-  ) {
-    final tabs = List<TabState>.from(state.tabs);
-    final index = tabs.indexWhere((tab) => tab.id == tabId);
+  BrowserProviderState _browserStateFromRust(
+    RustBrowserStateSnapshot rustState, {
+    required String? previousErrorMessage,
+    required bool clearErrorMessage,
+    required String? nextErrorMessage,
+  }) {
+    final resolvedActiveTabId = rustState.activeTabId;
 
-    if (index >= 0) {
-      tabs[index] = transform(tabs[index]);
-      return tabs;
-    }
+    final tabs = rustState.tabs
+        .map((rawTab) {
+          return TabState.fromMap({
+            ...rawTab,
+            'isActive':
+                resolvedActiveTabId != null &&
+                rawTab['id'] == resolvedActiveTabId,
+          });
+        })
+        .toList(growable: false);
 
-    tabs.add(
-      transform(
-        TabState(
-          id: tabId,
-          title: '',
-          url: '',
-          isActive: false,
-          isLoading: false,
-          canGoBack: false,
-          canGoForward: false,
-          isSuspended: false,
-        ),
-      ),
+    return BrowserProviderState(
+      tabs: tabs,
+      activeTabId: resolvedActiveTabId,
+      errorMessage: clearErrorMessage
+          ? null
+          : (nextErrorMessage ?? previousErrorMessage),
     );
-    return tabs;
   }
 
-  List<TabState> _markOnlyActive(List<TabState> tabs, String activeTabId) {
-    return tabs
-        .map((tab) => tab.copyWith(isActive: tab.id == activeTabId))
-        .toList();
-  }
-
-  String _normalizeNavigationUrl(String tabId, String url) {
-    if (url.isNotEmpty) {
-      return url;
-    }
-
-    return state.tabs.where((tab) => tab.id == tabId).firstOrNull?.url ?? '';
-  }
-
-  String _buildNavigationErrorMessage(String url) {
-    if (url.isEmpty) {
-      return 'Network error while loading the requested page.';
-    }
-
-    return 'Network error while loading $url';
-  }
-
-  String? _resolveActiveTabId(List<TabState> tabs, String? activeTabId) {
-    if (tabs.isEmpty) {
-      return null;
-    }
-
-    if (activeTabId != null && tabs.any((tab) => tab.id == activeTabId)) {
-      return activeTabId;
-    }
-
-    return tabs.first.id;
-  }
-}
-
-extension on Iterable<TabState> {
-  /// Returns the first item in the iterable or `null` when it is empty.
-  TabState? get firstOrNull {
-    final iterator = this.iterator;
-    return iterator.moveNext() ? iterator.current : null;
+  void _logDebug(String message) {
+    developer.log(message, name: 'NetraBrowser');
   }
 }

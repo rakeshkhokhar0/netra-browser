@@ -1,16 +1,17 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:netra_browser/netra/di/modules/engine_module.dart';
-import 'package:netra_browser/netra/engine/adapters/webview2/webview2_adapter.dart';
-import 'package:uuid/uuid.dart';
+import 'package:netra_browser/netra/ffi/bridge.dart';
+
+import 'browser_provider.dart';
 
 /// Exposes the tab-operation provider used by the Flutter shell.
 ///
-/// This provider creates a thin lifecycle-only wrapper around the engine
-/// adapter so widgets and higher-level coordinators can perform tab
-/// operations without depending on engine construction details directly.
+/// This provider creates a thin lifecycle-only wrapper around the Rust bridge
+/// so widgets and higher-level coordinators can perform tab operations without
+/// depending on low-level bridge construction details directly.
 final tabProvider = Provider<TabProvider>((ref) {
-  final engine = ref.read(engineProvider) as WebView2Adapter;
-  return TabProvider(engine);
+  return TabProvider(ref, RustBridge.instance);
 });
 
 /// Wraps browser tab lifecycle operations for the Flutter layer.
@@ -23,30 +24,39 @@ final tabProvider = Provider<TabProvider>((ref) {
 /// This provider intentionally does not store browser state, does not handle
 /// navigation, and does not call the native method channel directly.
 class TabProvider {
-  /// Creates a lifecycle-only tab provider backed by the engine adapter.
-  TabProvider(this._engine);
+  /// Creates a lifecycle-only tab provider backed by the Rust bridge.
+  TabProvider(this._ref, this._rust);
 
-  final WebView2Adapter _engine;
-  final Uuid _uuid = const Uuid();
+  final Ref _ref;
+  final RustBridge _rust;
 
   /// Creates a new browser tab and makes it the active tab.
   ///
-  /// A unique identifier is generated in Dart so the same tab id can be used
-  /// consistently across the shell and native layers.
+  /// Rust generates the identifier and returns it to Flutter as the single
+  /// authoritative tab ID for the rest of the app lifecycle.
   Future<String> createTab() async {
-    final tabId = _uuid.v4();
-    await _engine.createTab(tabId);
-    await _engine.setActiveTab(tabId);
-    return tabId;
+    _logDebug('createTab -> Rust only');
+    final rustTab = await _rust.createTab();
+    await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
+
+    return rustTab.id;
   }
 
   /// Closes the browser tab associated with [tabId].
-  Future<void> closeTab(String tabId) {
-    return _engine.closeTab(tabId);
+  Future<void> closeTab(String tabId) async {
+    _logDebug('closeTab -> Rust only');
+    await _rust.closeTab(tabId: tabId);
+    await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
   }
 
   /// Switches the active browser tab to [tabId].
-  Future<void> switchTab(String tabId) {
-    return _engine.setActiveTab(tabId);
+  Future<void> switchTab(String tabId) async {
+    _logDebug('switchTab -> Rust only');
+    await _rust.setActiveTab(tabId: tabId);
+    await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
+  }
+
+  void _logDebug(String message) {
+    developer.log(message, name: 'NetraBrowser');
   }
 }

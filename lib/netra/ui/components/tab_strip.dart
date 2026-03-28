@@ -29,7 +29,7 @@ class TabStrip extends ConsumerWidget {
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           itemCount: tabs.length + 1,
-          separatorBuilder: (_, __) => const SizedBox(width: 4),
+          separatorBuilder: (_, _) => const SizedBox(width: 4),
           itemBuilder: (context, index) {
             if (index == tabs.length) {
               return IconButton(

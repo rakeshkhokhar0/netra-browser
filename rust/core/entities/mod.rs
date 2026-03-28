@@ -1,4 +1,5 @@
 pub mod bookmark;
+pub mod browser_state;
 pub mod browser_event;
 pub mod download;
 pub mod filter_list;

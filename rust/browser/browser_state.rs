@@ -1,5 +1,7 @@
 use crate::browser::navigation_controller::NavigationController;
 use crate::browser::tab_manager::TabManager;
+use crate::core::entities::browser_event::BrowserEvent;
+use crate::core::entities::browser_state::BrowserState as BrowserStateSnapshot;
 use crate::core::entities::tab::{Tab, TabId};
 
 /// Represents native window geometry tracked by the Rust browser core.
@@ -59,12 +61,12 @@ impl BrowserState {
 
     /// Closes a tab through [TabManager].
     pub fn close_tab(&mut self, tab_id: TabId) {
-        self.tab_manager.close_tab(tab_id);
+        let _ = self.tab_manager.close_tab(tab_id);
     }
 
     /// Sets the active tab through [TabManager].
-    pub fn set_active_tab(&mut self, tab_id: TabId) {
-        self.tab_manager.set_active_tab(tab_id);
+    pub fn set_active_tab(&mut self, tab_id: TabId) -> bool {
+        self.tab_manager.set_active_tab(tab_id)
     }
 
     /// Navigates the active tab using [NavigationController].
@@ -139,6 +141,16 @@ impl BrowserState {
         self.tab_manager.get_all_tabs()
     }
 
+    /// Returns the requested tab snapshot from [TabManager], if it exists.
+    pub fn get_tab(&self, tab_id: &str) -> Option<Tab> {
+        self.tab_manager.get_tab(tab_id)
+    }
+
+    /// Returns whether a tab exists in the current browser state.
+    pub fn contains_tab(&self, tab_id: &str) -> bool {
+        self.tab_manager.contains_tab(tab_id)
+    }
+
     /// Returns the currently active tab identifier, if any.
     ///
     /// Tab activity is derived directly from [TabManager] state.
@@ -149,6 +161,96 @@ impl BrowserState {
     /// Updates tracked window bounds.
     pub fn set_window_bounds(&mut self, bounds: WindowBounds) {
         self.window_bounds = bounds;
+    }
+
+    /// Updates the loading state flag for a specific tab.
+    pub fn set_tab_loading_state(&mut self, tab_id: &str, is_loading: bool) {
+        self.tab_manager.set_loading_state(tab_id, is_loading);
+    }
+
+    /// Returns a serializable browser-state snapshot for FFI consumers.
+    pub fn snapshot(&self) -> BrowserStateSnapshot {
+        BrowserStateSnapshot {
+            active_tab_id: self.get_active_tab_id(),
+            tabs: self.get_tabs(),
+        }
+    }
+
+    /// Applies a typed browser event to the Rust-owned state snapshot.
+    ///
+    /// Native WebView2 events flow into Rust through this path so the browser
+    /// core remains the single source of truth for the current tab list,
+    /// loading state, URL/title state, history affordances, and blocked
+    /// request counts.
+    pub fn apply_browser_event(&mut self, event: &BrowserEvent) {
+        match event {
+            BrowserEvent::FrameCreated { .. } => {}
+            BrowserEvent::FrameDestroyed { tab_id } => {
+                self.close_tab(tab_id.clone());
+            }
+            BrowserEvent::TitleChanged { tab_id, title } => {
+                self.tab_manager.update_title(tab_id, title.clone());
+            }
+            BrowserEvent::UrlChanged { tab_id, url } => {
+                self.tab_manager.update_url(tab_id, url.clone());
+            }
+            BrowserEvent::NavigationStarted { tab_id, url, .. } => {
+                let tab = self.get_tab(tab_id);
+                self.tab_manager.update_navigation_state(
+                    tab_id,
+                    url.clone(),
+                    tab.as_ref().map(|current| current.can_go_back).unwrap_or(false),
+                    tab.as_ref()
+                        .map(|current| current.can_go_forward)
+                        .unwrap_or(false),
+                );
+                self.tab_manager.set_loading_state(tab_id, true);
+            }
+            BrowserEvent::NavigationCompleted { tab_id, url, .. } => {
+                let tab = self.get_tab(tab_id);
+                self.tab_manager.update_navigation_state(
+                    tab_id,
+                    url.clone(),
+                    tab.as_ref().map(|current| current.can_go_back).unwrap_or(false),
+                    tab.as_ref()
+                        .map(|current| current.can_go_forward)
+                        .unwrap_or(false),
+                );
+                self.tab_manager.set_loading_state(tab_id, false);
+            }
+            BrowserEvent::NavigationFailed { tab_id, url, .. } => {
+                if !url.trim().is_empty() {
+                    self.tab_manager.update_url(tab_id, url.clone());
+                }
+                self.tab_manager.set_loading_state(tab_id, false);
+            }
+            BrowserEvent::LoadStarted { tab_id } => {
+                self.tab_manager.set_loading_state(tab_id, true);
+            }
+            BrowserEvent::LoadFinished { tab_id } => {
+                self.tab_manager.set_loading_state(tab_id, false);
+            }
+            BrowserEvent::HistoryStateChanged {
+                tab_id,
+                can_go_back,
+                can_go_forward,
+            } => {
+                let current_url = self
+                    .get_tab(tab_id)
+                    .map(|tab| tab.url)
+                    .unwrap_or_default();
+                self.tab_manager.update_navigation_state(
+                    tab_id,
+                    current_url,
+                    *can_go_back,
+                    *can_go_forward,
+                );
+            }
+            BrowserEvent::RequestBlocked { tab_id, .. } => {
+                self.tab_manager.increment_blocked_count(tab_id);
+            }
+            BrowserEvent::ConsoleMessage { .. } => {}
+        }
     }
 }
 

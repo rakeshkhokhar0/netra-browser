@@ -78,6 +78,13 @@ class WebViewManager {
   /// Indicates whether the shared environment has already been initialized.
   bool IsInitialized() const;
 
+  /// Returns the parent window captured during initialization.
+  ///
+  /// The returned handle is used by native control helpers that need the main
+  /// browser-host bounds when creating embedded tab surfaces outside the
+  /// Flutter MethodChannel path.
+  HWND GetParentWindow() const;
+
   /// Resizes the controller hosted inside the provided native host window.
   void ResizeHostWindowController(HWND host_window);
 

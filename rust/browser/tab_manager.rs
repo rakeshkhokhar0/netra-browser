@@ -46,6 +46,7 @@ impl TabManager {
             is_suspended: false,
             can_go_back: false,
             can_go_forward: false,
+            blocked_count: 0,
             last_accessed: Instant::now(),
         };
         tab.is_active = true;
@@ -62,14 +63,14 @@ impl TabManager {
     ///
     /// If the closed tab was active, another available tab is promoted to
     /// active.
-    pub fn close_tab(&mut self, tab_id: String) {
+    pub fn close_tab(&mut self, tab_id: String) -> bool {
         let was_active = self.active_tab_id.as_deref() == Some(tab_id.as_str());
         if self.tabs.remove(&tab_id).is_none() {
-            return;
+            return false;
         }
 
         if !was_active {
-            return;
+            return true;
         }
 
         self.active_tab_id = None;
@@ -82,6 +83,8 @@ impl TabManager {
                 self.active_tab_id = Some(next_id);
             }
         }
+
+        true
     }
 
     /// Switches active focus to the target tab and emits
@@ -92,9 +95,9 @@ impl TabManager {
     /// - if the target tab is suspended, [Self::resume_tab] is called first
     /// - previous active tab is deactivated
     /// - target tab is marked active and timestamped
-    pub fn set_active_tab(&mut self, tab_id: String) {
+    pub fn set_active_tab(&mut self, tab_id: String) -> bool {
         if !self.tabs.contains_key(&tab_id) {
-            return;
+            return false;
         }
 
         if self
@@ -116,11 +119,22 @@ impl TabManager {
 
         self.active_tab_id = Some(tab_id.clone());
         self.enforce_background_tab_limit();
+        true
     }
 
     /// Returns a cloned snapshot of all tracked tabs.
     pub fn get_all_tabs(&self) -> Vec<Tab> {
         self.tabs.values().cloned().collect()
+    }
+
+    /// Returns whether the target tab exists in the manager.
+    pub fn contains_tab(&self, tab_id: &str) -> bool {
+        self.tabs.contains_key(tab_id)
+    }
+
+    /// Returns a cloned snapshot of the specified tab when it exists.
+    pub fn get_tab(&self, tab_id: &str) -> Option<Tab> {
+        self.tabs.get(tab_id).cloned()
     }
 
     /// Returns the identifier of the currently active tab, if any.
@@ -147,6 +161,34 @@ impl TabManager {
             tab.url = url;
             tab.can_go_back = can_go_back;
             tab.can_go_forward = can_go_forward;
+        }
+    }
+
+    /// Updates only the visible URL for a specific tab.
+    pub fn update_url(&mut self, tab_id: &str, url: String) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.url = url;
+        }
+    }
+
+    /// Updates only the visible title for a specific tab.
+    pub fn update_title(&mut self, tab_id: &str, title: String) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.title = title;
+        }
+    }
+
+    /// Updates the loading flag for a specific tab.
+    pub fn set_loading_state(&mut self, tab_id: &str, is_loading: bool) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.is_loading = is_loading;
+        }
+    }
+
+    /// Increments the blocked-request counter for a specific tab.
+    pub fn increment_blocked_count(&mut self, tab_id: &str) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.increment_blocked_count();
         }
     }
 

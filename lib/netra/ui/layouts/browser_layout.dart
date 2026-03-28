@@ -93,7 +93,6 @@ class _BrowserLayoutState extends ConsumerState<BrowserLayout> {
         nativeBounds.width,
         nativeBounds.height,
       );
-      await provider.setActiveTab(tabId);
     } catch (error, stackTrace) {
       FlutterError.reportError(
         FlutterErrorDetails(

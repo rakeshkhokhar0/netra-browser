@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A strongly typed event representing state changes within an active browser tab.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowserEvent {
     /// Fired when an initial frame is successfully allocated.
     FrameCreated {

@@ -1,3 +1,5 @@
+use crate::core::entities::browser_event::BrowserEvent;
+
 /// Internal browser events used for synchronous module-to-module communication.
 ///
 /// This enum defines the shared event surface for core browser workflows.
@@ -5,6 +7,8 @@
 /// deterministically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Emitted when a native browser event is routed into the Rust core.
+    BrowserEvent(BrowserEvent),
     /// Emitted when a new tab is created.
     TabCreated(String),
     /// Emitted when an existing tab is closed.

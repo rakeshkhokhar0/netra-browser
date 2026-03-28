@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/services.dart';
 
+import '../../ffi/bridge.dart';
 import '../../shared/config/app_config.dart';
 
 /// Receives browser events from the native C++ bridge via an [EventChannel].
@@ -41,6 +43,19 @@ class EventChannelListener {
           ),
         ),
       )
+      .asyncMap((event) async {
+        try {
+          await RustBridge.instance.handleEvent(event);
+        } catch (error, stackTrace) {
+          developer.log(
+            'Rust event routing failed: $error',
+            name: 'NetraBrowser',
+            stackTrace: stackTrace,
+          );
+        }
+
+        return event;
+      })
       .asBroadcastStream();
 
   /// Broadcast stream of raw browser events emitted by the native bridge.

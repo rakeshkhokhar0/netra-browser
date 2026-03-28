@@ -2,6 +2,7 @@
 
 #include <optional>
 
+#include "bridge/ffi/rust_bridge.h"
 #include "bridge/webview2/webview_manager.h"
 #include "generated_plugin_registrant.h"
 
@@ -43,6 +44,7 @@ bool FlutterWindow::OnCreate() {
   RegisterWebViewEventEmitter(messenger);
   RegisterWebViewMethodHandler(messenger, GetHandle());
   WebViewManager::GetInstance().Initialize(GetHandle(), [](HRESULT) {});
+  netra::bridge::ffi::RegisterRustNativeExecutor();
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

@@ -563,6 +563,10 @@ bool WebViewManager::IsInitialized() const {
   return environment_ != nullptr;
 }
 
+HWND WebViewManager::GetParentWindow() const {
+  return parent_window_;
+}
+
 HRESULT WebViewManager::EnsureUiThread() const {
   if (ui_thread_id_ == 0 || ::GetCurrentThreadId() != ui_thread_id_) {
     return HRESULT_FROM_WIN32(ERROR_INVALID_THREAD_ID);

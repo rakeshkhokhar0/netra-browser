@@ -244,13 +244,6 @@ void HandleMethodCall(HWND parent_window,
     return;
   }
 
-  ICoreWebView2Controller* controller =
-      WebViewManager::GetInstance().GetController(*tab_id);
-  if (controller == nullptr) {
-    result->Error("missing_tab", "No controller exists for the provided tab_id.");
-    return;
-  }
-
   if (call.method_name() == "setBounds") {
     const auto bounds = ReadBoundsArgument(*arguments, "bounds");
     if (!bounds.has_value()) {
@@ -266,6 +259,13 @@ void HandleMethodCall(HWND parent_window,
     }
 
     result->Success(EncodableValue(true));
+    return;
+  }
+
+  ICoreWebView2Controller* controller =
+      WebViewManager::GetInstance().GetController(*tab_id);
+  if (controller == nullptr) {
+    result->Error("missing_tab", "No controller exists for the provided tab_id.");
     return;
   }
 

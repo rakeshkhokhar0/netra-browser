@@ -16,6 +16,7 @@ class TabState {
     required this.canGoBack,
     required this.canGoForward,
     required this.isSuspended,
+    required this.blockedCount,
   });
 
   /// Stable tab identifier originating from the Rust core.
@@ -42,6 +43,9 @@ class TabState {
   /// Whether the tab is currently suspended by the Rust core.
   final bool isSuspended;
 
+  /// Number of requests blocked for this tab by the Rust core.
+  final int blockedCount;
+
   /// Creates a [TabState] from a decoded JSON or map payload.
   ///
   /// Missing values fall back to safe defaults so the UI layer can decode
@@ -64,6 +68,8 @@ class TabState {
           map['is_suspended'] as bool? ??
           map['isSuspended'] as bool? ??
           false,
+      blockedCount:
+          map['blocked_count'] as int? ?? map['blockedCount'] as int? ?? 0,
     );
   }
 
@@ -77,6 +83,7 @@ class TabState {
     bool? canGoBack,
     bool? canGoForward,
     bool? isSuspended,
+    int? blockedCount,
   }) {
     return TabState(
       id: id ?? this.id,
@@ -87,6 +94,7 @@ class TabState {
       canGoBack: canGoBack ?? this.canGoBack,
       canGoForward: canGoForward ?? this.canGoForward,
       isSuspended: isSuspended ?? this.isSuspended,
+      blockedCount: blockedCount ?? this.blockedCount,
     );
   }
 }
