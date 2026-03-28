@@ -13,6 +13,12 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
+/// Emits a tab-created event into the Flutter event stream.
+void EmitTabCreated(const std::string& tab_id);
+
+/// Emits a tab-closed event into the Flutter event stream.
+void EmitTabClosed(const std::string& tab_id);
+
 namespace {
 
 using EncodableMap = flutter::EncodableMap;
@@ -174,16 +180,18 @@ void HandleMethodCall(HWND parent_window,
     }
 
     std::shared_ptr<MethodResult> shared_result(std::move(result));
+    const std::string created_tab_id = *tab_id;
 
     const HRESULT create_result = WebViewManager::GetInstance().CreateController(
         *tab_id, bounds,
-        [shared_result](HRESULT status,
-                        ICoreWebView2Controller* controller) {
+        [shared_result, created_tab_id](HRESULT status,
+                                        ICoreWebView2Controller* controller) {
           if (FAILED(status) || controller == nullptr) {
             ReturnHresultError(shared_result.get(), "createTab", status);
             return;
           }
 
+          EmitTabCreated(created_tab_id);
           shared_result->Success(EncodableValue(true));
         });
 
@@ -213,6 +221,7 @@ void HandleMethodCall(HWND parent_window,
       return;
     }
 
+    EmitTabClosed(*tab_id);
     result->Success(EncodableValue(true));
     return;
   }

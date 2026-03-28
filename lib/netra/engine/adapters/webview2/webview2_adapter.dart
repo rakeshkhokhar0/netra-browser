@@ -53,8 +53,7 @@ class WebView2Adapter implements IEngine {
   @override
   Future<IFrame> createFrame() async {
     final frameId = _generateFrameId();
-    _frameStateCache.ensureFrame(frameId);
-    await MethodChannelBridge.createTab(frameId);
+    await createTab(frameId);
     return _WebView2FrameAdapter(frameId);
   }
 
@@ -63,8 +62,25 @@ class WebView2Adapter implements IEngine {
   /// The [frameId] is forwarded directly to the native `closeTab` command.
   @override
   Future<void> destroyFrame(String frameId) {
-    _frameStateCache.removeFrame(frameId);
-    return MethodChannelBridge.closeTab(frameId);
+    return closeTab(frameId);
+  }
+
+  /// Creates a native browser tab for the provided [tabId].
+  ///
+  /// The adapter ensures local frame metadata exists before forwarding the
+  /// create-tab command to the native bridge.
+  Future<void> createTab(String tabId) {
+    _frameStateCache.ensureFrame(tabId);
+    return MethodChannelBridge.createTab(tabId);
+  }
+
+  /// Closes the native browser tab associated with [tabId].
+  ///
+  /// The adapter removes any cached shell-side metadata before forwarding the
+  /// close command to the native bridge.
+  Future<void> closeTab(String tabId) {
+    _frameStateCache.removeFrame(tabId);
+    return MethodChannelBridge.closeTab(tabId);
   }
 
   /// Navigates the specified native tab to the requested URL.

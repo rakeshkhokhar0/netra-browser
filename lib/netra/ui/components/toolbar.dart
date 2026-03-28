@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/tab_state.dart';
 import '../providers/browser_provider.dart';
-import '../providers/tab_provider.dart';
+import 'blocked_counter.dart';
 import 'address_bar.dart';
 
 /// Renders the browser toolbar shown at the top of the main shell screen.
@@ -13,15 +14,11 @@ import 'address_bar.dart';
 /// forwards user actions into the UI provider layer and intentionally avoids
 /// storing browser state or embedding business logic in the component itself.
 class Toolbar extends ConsumerWidget {
-  /// Creates the browser toolbar for the provided active tab identifier.
+  /// Creates the browser toolbar.
   const Toolbar({
-    required this.tabId,
     this.isEnabled = true,
     super.key,
   });
-
-  /// Active tab identifier targeted by the toolbar actions.
-  final String tabId;
 
   /// Whether toolbar actions should currently allow user interaction.
   final bool isEnabled;
@@ -30,7 +27,11 @@ class Toolbar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final provider = ref.read(browserProvider);
-    final activeTabState = ref.watch(activeTabStateProvider).valueOrNull;
+    final browserState = ref.watch(browserStateProvider);
+    final activeTabId = browserState.activeTabId;
+    final activeTabState = browserState.tabs.firstWhereOrNull(
+      (tab) => tab.id == browserState.activeTabId,
+    );
     final canGoBack = isEnabled && (activeTabState?.canGoBack ?? false);
     final canGoForward = isEnabled && (activeTabState?.canGoForward ?? false);
 
@@ -47,7 +48,11 @@ class Toolbar extends ConsumerWidget {
                 onPressed: canGoBack
                     ? () => _runCommand(
                           context,
-                          () => provider.goBack(tabId),
+                          () async {
+                            if (activeTabId != null) {
+                              await provider.goBack(activeTabId);
+                            }
+                          },
                         )
                     : null,
                 icon: const Icon(Icons.arrow_back),
@@ -58,7 +63,11 @@ class Toolbar extends ConsumerWidget {
                     canGoForward
                         ? () => _runCommand(
                               context,
-                              () => provider.goForward(tabId),
+                              () async {
+                                if (activeTabId != null) {
+                                  await provider.goForward(activeTabId);
+                                }
+                              },
                             )
                         : null,
                 icon: const Icon(Icons.arrow_forward),
@@ -68,7 +77,11 @@ class Toolbar extends ConsumerWidget {
                 onPressed: isEnabled
                     ? () => _runCommand(
                           context,
-                          () => provider.reload(tabId),
+                          () async {
+                            if (activeTabId != null) {
+                              await provider.reload(activeTabId);
+                            }
+                          },
                         )
                     : null,
                 icon: const Icon(Icons.refresh),
@@ -77,10 +90,11 @@ class Toolbar extends ConsumerWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: AddressBar(
-                  tabId: tabId,
                   isEnabled: isEnabled,
                 ),
               ),
+              const SizedBox(width: 12),
+              const BlockedCounter(),
             ],
           ),
         ),
@@ -112,5 +126,17 @@ class Toolbar extends ConsumerWidget {
         ),
       );
     }
+  }
+}
+
+extension on Iterable<TabState> {
+  /// Returns the first matching tab or `null` when no match is found.
+  TabState? firstWhereOrNull(bool Function(TabState tab) test) {
+    for (final tab in this) {
+      if (test(tab)) {
+        return tab;
+      }
+    }
+    return null;
   }
 }

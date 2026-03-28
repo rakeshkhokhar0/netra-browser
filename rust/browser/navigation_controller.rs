@@ -44,8 +44,8 @@ impl NavigationController {
     /// final URL.
     ///
     /// Rules:
-    /// - input containing spaces is treated as a search query
-    /// - input without a scheme is prefixed with `https://`
+    /// - free-form queries are treated as search input
+    /// - direct addresses without a scheme are prefixed with `https://`
     /// - input with a scheme is kept as-is
     ///
     /// History behavior:
@@ -116,18 +116,27 @@ impl NavigationController {
     /// Normalizes raw navigation input into a final URL.
     ///
     /// Normalization pipeline:
-    /// - search-query conversion when spaces are present
-    /// - scheme auto-prefixing when missing
+    /// - search-query conversion for non-address input
+    /// - scheme auto-prefixing for direct addresses without a scheme
     fn normalize_input(input: String) -> String {
-        if input.contains(' ') {
-            return Self::to_search_url(input);
+        let trimmed_input = input.trim().to_string();
+        if trimmed_input.is_empty() {
+            return trimmed_input;
         }
 
-        if !input.contains("://") {
-            return format!("https://{input}");
+        if trimmed_input.contains(' ') {
+            return Self::to_search_url(trimmed_input);
         }
 
-        input
+        if trimmed_input.contains("://") {
+            return trimmed_input;
+        }
+
+        if Self::looks_like_direct_address(&trimmed_input) {
+            return format!("https://{trimmed_input}");
+        }
+
+        Self::to_search_url(trimmed_input)
     }
 
     /// Builds a Google search URL from raw query text.
@@ -139,5 +148,34 @@ impl NavigationController {
             .collect::<Vec<&str>>()
             .join("+");
         format!("https://www.google.com/search?q={encoded}")
+    }
+
+    /// Returns whether the input resembles a direct host/address entry.
+    fn looks_like_direct_address(input: &str) -> bool {
+        if input.starts_with("localhost") {
+            return true;
+        }
+
+        if Self::looks_like_ipv4_address(input) {
+            return true;
+        }
+
+        input.contains('.')
+    }
+
+    /// Returns whether the input starts with an IPv4 address, optionally
+    /// followed by a port or path.
+    fn looks_like_ipv4_address(input: &str) -> bool {
+        let host_part = input
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(input);
+        let address_part = host_part.split(':').next().unwrap_or(host_part);
+        let octets: Vec<&str> = address_part.split('.').collect();
+        if octets.len() != 4 {
+            return false;
+        }
+
+        octets.into_iter().all(|octet| octet.parse::<u8>().is_ok())
     }
 }

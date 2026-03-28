@@ -1,48 +1,51 @@
-# Netra Dart Layer
+# Netra Flutter Layer
 
-This folder contains the Flutter/Dart side of Netra Browser. It defines the
-UI shell, engine abstractions, bridge transport adapters, and shared models.
+The `lib/netra/` directory contains the Flutter-side browser shell.
+
+## Role In The System
+
+- Renders UI only
+- Sends user actions into the Rust-driven browser pipeline
+- Receives browser events and typed state updates
+- Avoids owning browser-domain logic and persistent browser state
+
+## Layer Breakdown
+
+- `ui/`
+  - tab strip, toolbar, address bar, layout, and screens
+- `engine/`
+  - typed browser events and engine-facing Dart contracts
+- `ffi/`
+  - Rust bridge bootstrap and Dart FFI entry points
+- `infrastructure/`
+  - Dart bridge adapters and transport helpers
+- `di/`
+  - dependency wiring
+- `core/`
+  - shared Dart-side models and event contracts used by the shell
+- `shared/`
+  - configuration, errors, and utilities
+
+## Architecture Rules
+
+- Flutter is stateless relative to browser-domain ownership
+- Rust owns all browser logic and state
+- Flutter reacts to events and renders current state
+- No duplicate browser state should be introduced in Dart
 
 ## Current Status
 
-- Windows browser shell path is wired from UI -> provider -> engine adapter ->
-  MethodChannel/EventChannel.
-- Typed browser event mapping is implemented in Dart.
-- Rust bridge bootstrap path is initialized at app startup.
-- Several secondary UI screens/components are still placeholders.
+Phase 2 is complete on the Rust side.
 
-## Subfolder Ownership
+The Flutter layer is prepared for Phase 3 integration:
 
-- `core/`
-  - Shared entities and event contracts used across engine and UI layers.
-  - Examples: tab state, history entry, bookmarks, browser event base types.
-- `di/`
-  - Dependency injection wiring through Riverpod providers/modules.
-  - `engine_module.dart` is the single adapter construction entry.
-- `engine/`
-  - Platform-agnostic interfaces plus concrete WebView2 adapter.
-  - Owns typed browser event translation and frame-state cache.
-- `ffi/`
-  - Dart FFI bootstrap for Rust dynamic library loading and smoke test calls.
-- `infrastructure/`
-  - Platform channel transport adapters (`MethodChannel` and `EventChannel`).
-  - No business logic; command/event plumbing only.
-- `shared/`
-  - App-wide config constants, shared errors, and utility helpers.
-- `ui/`
-  - Browser shell widgets, layout, providers, and user interaction handling.
-  - Main shell is active; some feature screens/components are placeholders.
+- browser shell structure exists
+- typed event models exist
+- bridge bootstrap is in place
+- UI integration against the finalized Rust event flow is the next step
 
-## Work Done In This Layer
+## Phase 3 Focus
 
-- App initializes Rust bridge before rendering UI.
-- Active tab lifecycle and state sync implemented via Riverpod.
-- Toolbar and address bar commands are connected to native methods.
-- Native event stream is converted to typed `BrowserEvent` classes.
-- Browser layout reports bounds to native side and sets active tab.
-
-## Known Gaps
-
-- `executeScript` is not exposed through the Dart method-channel path yet.
-- Some screens/components (bookmarks/history/downloads/settings) are scaffolded
-  placeholders and need full UI + feature wiring.
+- connect Dart event handling to the unified Rust event pipeline
+- bind UI state to Rust-driven tab and navigation updates
+- complete WebView2/native bridge integration with the shell

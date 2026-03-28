@@ -131,6 +131,16 @@ class WebViewEventEmitter {
                                                  }));
   }
 
+  /// Emits a tab-created event for a tab.
+  void EmitTabCreated(const std::string& tab_id) {
+    Broadcast(BuildEvent("TabCreated", tab_id, {}));
+  }
+
+  /// Emits a tab-closed event for a tab.
+  void EmitTabClosed(const std::string& tab_id) {
+    Broadcast(BuildEvent("TabClosed", tab_id, {}));
+  }
+
   /// Emits an engine-ready event for a tab.
   void EmitEngineReady(const std::string& tab_id) {
     Broadcast(BuildEvent("engineReady", tab_id, {}));
@@ -246,6 +256,16 @@ void EmitHistoryChanged(const std::string& tab_id,
 /// Emits a request-blocked event into the Flutter EventChannel stream.
 void EmitRequestBlocked(const std::string& tab_id, const std::string& url) {
   WebViewEventEmitter::GetInstance().EmitRequestBlocked(tab_id, url);
+}
+
+/// Emits a tab-created event into the Flutter EventChannel stream.
+void EmitTabCreated(const std::string& tab_id) {
+  WebViewEventEmitter::GetInstance().EmitTabCreated(tab_id);
+}
+
+/// Emits a tab-closed event into the Flutter EventChannel stream.
+void EmitTabClosed(const std::string& tab_id) {
+  WebViewEventEmitter::GetInstance().EmitTabClosed(tab_id);
 }
 
 /// Emits an engine-ready event into the Flutter EventChannel stream.

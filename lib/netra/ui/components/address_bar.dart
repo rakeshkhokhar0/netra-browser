@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/tab_state.dart';
 import '../providers/browser_provider.dart';
-import '../providers/tab_provider.dart';
 
 /// Renders the browser address bar used for URL navigation input.
 ///
@@ -13,15 +13,11 @@ import '../providers/tab_provider.dart';
 /// It intentionally avoids calling bridge code directly or containing broader
 /// browser logic.
 class AddressBar extends ConsumerStatefulWidget {
-  /// Creates the address bar for the provided active tab identifier.
+  /// Creates the address bar for the currently active tab.
   const AddressBar({
-    required this.tabId,
     this.isEnabled = true,
     super.key,
   });
-
-  /// Active tab identifier that should receive navigation commands.
-  final String tabId;
 
   /// Whether the address bar should currently allow user interaction.
   final bool isEnabled;
@@ -52,7 +48,10 @@ class _AddressBarState extends ConsumerState<AddressBar> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final activeTabState = ref.watch(activeTabStateProvider).valueOrNull;
+    final browserState = ref.watch(browserStateProvider);
+    final activeTabState = browserState.tabs.firstWhereOrNull(
+      (tab) => tab.id == browserState.activeTabId,
+    );
     final currentUrl = activeTabState?.url ?? '';
 
     if (!_focusNode.hasFocus && _controller.text != currentUrl) {
@@ -99,13 +98,14 @@ class _AddressBarState extends ConsumerState<AddressBar> {
       return;
     }
 
+    final activeTabId = ref.watch(browserStateProvider).activeTabId ?? '';
     final url = value.trim();
-    if (url.isEmpty || widget.tabId.isEmpty) {
+    if (url.isEmpty || activeTabId.isEmpty) {
       return;
     }
 
     try {
-      await ref.read(browserProvider).navigate(widget.tabId, url);
+      await ref.read(browserProvider).navigate(activeTabId, url);
     } on PlatformException catch (error) {
       if (!mounted) {
         return;
@@ -119,5 +119,17 @@ class _AddressBarState extends ConsumerState<AddressBar> {
         ),
       );
     }
+  }
+}
+
+extension on Iterable<TabState> {
+  /// Returns the first matching tab or `null` when no match is found.
+  TabState? firstWhereOrNull(bool Function(TabState tab) test) {
+    for (final tab in this) {
+      if (test(tab)) {
+        return tab;
+      }
+    }
+    return null;
   }
 }

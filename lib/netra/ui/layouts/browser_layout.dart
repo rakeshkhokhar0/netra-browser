@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/browser_provider.dart';
-import '../providers/tab_provider.dart';
 
 /// Provides the main content area for the browser shell.
 ///
@@ -29,8 +28,10 @@ class _BrowserLayoutState extends ConsumerState<BrowserLayout> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final activeTabState = ref.watch(activeTabStateProvider);
-    final tabId = activeTabState.valueOrNull?.tabId ?? '';
+    final tabId = ref.watch(
+          browserStateProvider.select((state) => state.activeTabId),
+        ) ??
+        '';
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeBounds(tabId);
@@ -110,7 +111,7 @@ class _BrowserLayoutState extends ConsumerState<BrowserLayout> {
         _resyncRequested = false;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _syncNativeBounds(
-            ref.read(activeTabStateProvider).valueOrNull?.tabId ?? '',
+            ref.read(browserStateProvider).activeTabId ?? '',
           );
         });
       }
