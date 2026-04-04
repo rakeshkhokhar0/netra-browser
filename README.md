@@ -1,170 +1,122 @@
-# Netra Browser
+# Netra 
+> A privacy-first browser, built from scratch.
 
-Netra Browser is a Windows-first desktop browser shell built from three
-cooperating layers:
+> 🚧 **Work in Progress:** Netra is currently under active development and is not fully built yet. The core architecture is actively being stabilized and bootstrapped.
 
-- Flutter renders the application UI.
-- Rust owns browser state, navigation orchestration, and event dispatch.
-- C++ hosts WebView2 and bridges native browser surfaces to the Rust core.
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Flutter](https://img.shields.io/badge/Made_with-Flutter-46b0fa?logo=flutter)
+![Rust](https://img.shields.io/badge/Made_with-Rust-black?logo=rust)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Built with AI](https://img.shields.io/badge/Built_with-AI-purple)
 
-The core rule in this repository is simple: Rust is the source of truth for
-browser-domain state, while Flutter reacts to snapshots and typed events.
+## What is Netra?
 
-## Current Architecture
+Netra (which means "eye" in Sanskrit) is a privacy-first, cross-platform browser engineered from the ground up to prioritize user control and system efficiency. Instead of relying on full-fledged massive browser engines like Chromium for the business logic, Netra builds its own lightweight core using Rust and a beautiful interface using Flutter, utilizing platform-native WebViews (like Edge WebView2 on Windows) strictly for rendering web content.
 
-### Flutter shell
+**Core Philosophy:**
+- **Zero Telemetry on Launch:** Netra does not track you. Any future telemetry will be completely transparent and strictly opt-in.
+- **DuckDuckGo Default:** Privacy defaults out-of-the-box.
+- **Modular by Design:** Every third-party component sits behind a clean interface. The long-term goal is to replace external implementations (like `adblock-rust` or `sqflite` (planned to be replaced)) with Netra-owned code over time.
+- **No Chrome Extensions:** Extension compatibility has been dropped by design to reduce complexity and attack surfaces.
+- **Monetization Deferred:** The focus right now is purely on shipping a robust, secure, and blazing fast privacy browser.
 
-- App startup begins in `lib/main.dart` and initializes the Rust bridge before
-  `runApp`.
-- Riverpod providers in `lib/netra/ui/providers/` expose browser state to the
-  UI.
-- Browser commands such as create tab, close tab, activate tab, navigate,
-  back, forward, reload, and stop loading go through the Dart FFI bridge.
-- Flutter still owns layout updates for embedded native surfaces and sends
-  `setBounds` over a MethodChannel to the Windows runner.
+Netra is uniquely developed. It is built natively via an AI-assisted approach where agents (Codex, Claude, Gemini, Opus) author the implementation details while a human engineer actively owns all architecture, interface boundaries, and system design. 
 
-### Rust core
+## Architecture Overview
 
-- `browser/` contains the runtime controller, state coordinator, navigation
-  controller, tab manager, and event dispatcher.
-- `core/` defines shared entities, value objects, errors, and the synchronous
-  `EventBus`.
-- `ffi/` exports the C ABI consumed by Dart and the Windows runner, including
-  command entry points, browser-state snapshots, and event registration.
-- `native_control.rs` lets Rust invoke Windows-native tab and navigation
-  actions after the native executor is registered.
+Netra utilizes a robust, deterministic, layered architecture to ensure separation of concerns and thread safety across its hybrid tech stack:
 
-### Windows native bridge
+1. **Flutter UI Layer (`lib/`):** Written in Dart. Manages the visual rendering and user interactions, utilizing `flutter_riverpod` for state management.
+2. **Dart Interfaces:** Abstract the underlying engine, sending deterministic UI intent events.
+3. **FFI Bridge (`flutter_rust_bridge`):** Handles bidirectional, memory-safe communication between Dart and Rust.
+4. **Rust Core (`rust/`):** The brain of the browser. It owns the true state, handles the tab manager (with a planned LRU background suspension model), adblocking (currently `adblock-rust`), DNS-over-HTTPS (via Cloudflare 1.1.1.1), and download management.
+5. **C++ WebView2 Bridge (`windows/runner/bridge/`):** Receives commands from Rust through FFI and manipulates Microsoft Edge WebView2 controls for rendering the actual web pages on Windows.
 
-- `windows/runner/flutter_window.cpp` registers the MethodChannel handler,
-  initializes the shared WebView2 environment, and registers native executor
-  callbacks with Rust at startup.
-- `windows/runner/bridge/webview2/` manages tab-scoped WebView2 controllers,
-  host windows, event hooks, request interception, and bounds updates.
-- `windows/runner/bridge/ffi/` resolves the Rust DLL, forwards native browser
-  events into Rust, and exposes the callback surface used by Rust to control
-  WebView2 tabs.
+*(The Android and iOS versions will utilize Kotlin and Swift bridges respectively to interface with their native WebViews under the exact same Rust core model).*
 
-## Runtime Flow
+## Folder Structure
 
-1. Flutter initializes the Rust bridge.
-2. The Windows runner initializes WebView2 and registers native executor
-   callbacks with Rust.
-3. UI actions call Rust FFI entry points.
-4. Rust mutates browser state through `BrowserController`.
-5. Rust forwards tab and navigation commands to the native executor.
-6. WebView2 emits browser events in C++, which are sent back into Rust.
-7. Rust publishes authoritative browser events back to Flutter, and the UI
-   refreshes from Rust-owned snapshots.
+```text
+netra-browser/
+├── android/       # Platform runner for Android (Phase 2 planned)
+├── ios/           # Platform runner for iOS (Phase 2 planned)
+├── lib/           # Flutter UI layer and Dart application logic
+│   └── netra/     # Application components and infrastructure
+├── linux/         # Platform runner for Linux (Phase 3 planned)
+├── macos/         # Platform runner for macOS (Phase 3 planned)
+├── rust/          # Core browser logic (Rust crate, FFI bridge)
+├── test/          # Flutter widget and unit tests
+├── web/           # Web asset structure (Not targeted for deployment)
+└── windows/       # Windows C++ runner, FFI bridge, and WebView2 integration
+```
 
-## Repository Map
+## Getting Started
 
-- `lib/netra/`: Flutter shell, providers, engine adapters, and bridge glue.
-- `rust/`: Rust browser runtime, FFI exports, shared entities, and services.
-- `windows/runner/bridge/`: WebView2 hosting and C++ to Rust integration.
-- `docs/`: supporting notes and project documentation.
-- `android/`, `ios/`, `linux/`, `macos/`, `web/`: standard Flutter platform
-  scaffolding. The browser-engine integration is currently wired on Windows.
-
-## Current Status
-
-Implemented today:
-
-- Rust-owned multi-tab and navigation state.
-- Dart FFI bridge for browser commands and state snapshots.
-- Rust-to-Flutter event dispatch for typed browser updates.
-- Windows WebView2 controller lifecycle and tab host windows.
-- Native request interception and browser event forwarding into Rust.
-
-Known limitations:
-
-- The Windows MethodChannel currently exposes only `setBounds`.
-- Native request blocking is still stubbed in
-  `windows/runner/bridge/ffi/rust_bridge.cpp`.
-- Document-created script injection is currently a placeholder in
-  `windows/runner/bridge/webview2/webview_manager.h`.
-
-## Fresh Clone Setup
-
-This project is currently set up for Windows desktop development first. After
-pulling the repo, use the steps below to get a working local environment.
+Follow these steps to set up the Netra environment on Windows, the primary supported platform for Phase 1.
 
 ### Prerequisites
 
-- Flutter SDK with Windows desktop enabled.
-- Rust toolchain with `cargo` available on `PATH`.
-- Visual Studio Build Tools or Visual Studio with Desktop development for C++.
-- CMake and Git.
-- Microsoft Edge WebView2 Runtime installed on Windows.
-- Microsoft Edge WebView2 SDK extracted to `C:/webview2-sdk`.
+1. **[Flutter SDK](https://docs.flutter.dev/get-started/install/windows)** (stable channel)
+2. **[Rust Toolchain](https://rustup.rs/)** (via `rustup`)
+3. **Visual Studio 2022** with the following installed:
+   - "Desktop development with C++" workload
+   - MSVC v143 build tools
+   - Windows 10/11 SDK
+4. **Microsoft Edge WebView2 Runtime:** Pre-installed on modern Windows 10/11. If you are on an older build, download the [Evergreen Bootstrapper](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) from Microsoft.
+5. **Microsoft Edge WebView2 SDK:** 
+   - The SDK is integrated directly on Windows environments. Ensure you have extracted the WebView2 SDK and moved or symlinked it to exactly `C:/webview2-sdk` — the `windows/runner/CMakeLists.txt` build configuration specifically looks for `C:/webview2-sdk/include/WebView2.h`. 
+6. **Git**
 
-Important:
+### Clone & Build
+1. Clone the repository:
+   ```bash
+   git clone <repository_url>
+   ```
+2. Navigate into the project:
+   ```bash
+   cd netra-browser
+   ```
+3. Fetch Dart dependencies:
+   ```bash
+   flutter pub get
+   ```
+4. Build and Run on Windows:
+   ```bash
+   flutter run -d windows
+   ```
+   *Note: Our custom `CMakeLists.txt` is configured to automatically run `cargo build` for the Rust FFI core (`netra_rust.dll`) as a pre-build dependency via the `rust_bridge_build` target. If you prefer to build the Rust core manually, you can navigate to `rust/` and run `cargo build --release`.*
 
-- `windows/runner/CMakeLists.txt` currently expects the WebView2 SDK at
-  `C:/webview2-sdk`.
-- That folder must contain:
-  - `include/WebView2.h`
-  - `lib/x64/WebView2LoaderStatic.lib`
-- If your SDK is somewhere else, update `WEBVIEW2_SDK_PATH` in
-  `windows/runner/CMakeLists.txt`.
+### Verify Setup
+- Run `flutter doctor` to confirm your Flutter and Visual Studio C++ environments are fully resolved.
+- Run `rustc --version` and `cargo --version` to confirm your Rust toolchain.
+- **Common Error:** *WebView2.h not found. Check SDK path.* -> Ensure the WebView2 SDK is located at `C:/webview2-sdk` so CMake can resolve the C++ headers and `WebView2LoaderStatic.lib`.
 
-### First-Time Setup
+## Roadmap
 
-1. Clone the repository and open it in a Windows terminal.
-2. Install Flutter packages:
+| Phase | Platforms / Features | Status |
+| :--- | :--- | :--- |
+| **Phase 1** | Windows | 🚧 Work in Progress |
+| **Phase 2** | Android, iOS | ⏳ Planned |
+| **Phase 3** | macOS, Linux, AI features, Native Sync | ⏳ Planned |
 
-```powershell
-flutter pub get
-```
+## Built With AI
 
-3. Confirm your local toolchains are ready:
+Netra's implementation is aggressively accelerated using AI agents, including **Codex**, **Claude Sonnet**, **Gemini**, and **Claude Opus**. 
 
-```powershell
-flutter doctor -v
-cargo --version
-```
+AI writes the implementation, but **the engineer owns the system**. Every line of code, architectural boundary, and system invariant is validated and driven by human design. This project is proudly part of the `#buildinpublic` series showcasing human-guided AI software development.
 
-4. Optional but recommended: verify the Rust core compiles and tests cleanly:
+## Contributing
 
-```powershell
-cargo test --manifest-path rust/Cargo.toml
-```
+Netra is currently **not open for code contributions** as the core architecture is being tightly stabilized and bootstrapped. 
 
-5. Run the desktop app:
+However, stars ⭐ and issue reports or feature requests are incredibly welcome and appreciated!
 
-```powershell
-flutter run -d windows
-```
+## License
 
-### Build Notes
+This project is licensed under the **MIT License**.
 
-- You do not need to build the Rust DLL manually for the normal Windows app
-  flow.
-- The Windows runner CMake build triggers `cargo build` automatically through
-  the `rust_bridge_build` target.
-- After the Rust build completes, `netra_rust.dll` is copied into the Windows
-  runner output folder automatically.
-- Flutter-generated folders such as `build/` and `windows/flutter/ephemeral/`
-  are recreated locally during setup and build.
+## Author
 
-### Common Issues
-
-- `WebView2.h not found. Check SDK path.`
-  This means the SDK is missing from `C:/webview2-sdk` or the CMake path needs
-  to be updated.
-- `cargo` not found
-  Install Rust and reopen the terminal so `cargo` is on `PATH`.
-- Flutter Windows toolchain errors
-  Run `flutter doctor -v` and complete any missing Visual Studio or desktop
-  toolchain setup.
-- App builds but native browser surfaces do not initialize
-  Check that the WebView2 Runtime is installed and that `netra_rust.dll` was
-  copied into the build output.
-
-## Folder READMEs
-
-For more detail, see the folder-specific documentation:
-
-- `lib/netra/README.md`
-- `rust/README.md`
-- `windows/runner/bridge/README.md`
+Built by **Rakesh Khokhar**  
+[LinkedIn] • [GitHub]
