@@ -12,6 +12,8 @@ pub struct Tab {
     pub id: TabId,
     /// Current document title associated with the tab.
     pub title: String,
+    /// Current favicon URL associated with the tab, when provided by WebView2.
+    pub favicon_url: Option<String>,
     /// Current visible URL for the tab.
     pub url: String,
     /// Whether this tab is currently the active tab.
@@ -29,6 +31,8 @@ pub struct Tab {
     /// This counter is updated from native request-blocked events routed back
     /// through the Rust event pipeline.
     pub blocked_count: u32,
+    /// Monotonically increasing sequence number for this tab's events.
+    pub sequence_number: u32,
     #[serde(skip, default = "Instant::now")]
     pub last_accessed: Instant,
 }
@@ -38,6 +42,7 @@ impl Tab {
         Self {
             id,
             title: String::new(),
+            favicon_url: None,
             url: "about:blank".to_string(),
             is_active: false,
             is_loading: false,
@@ -45,6 +50,7 @@ impl Tab {
             can_go_forward: false,
             is_suspended: false,
             blocked_count: 0,
+            sequence_number: 0,
             last_accessed: Instant::now(),
         }
     }
@@ -68,6 +74,10 @@ impl Tab {
 
     pub fn update_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    pub fn update_favicon_url(&mut self, favicon_url: Option<String>) {
+        self.favicon_url = favicon_url;
     }
 
     pub fn increment_blocked_count(&mut self) {

@@ -1,27 +1,34 @@
 # Windows Rust FFI Bridge
 
-This folder owns the narrow C++ to Rust bridge used by the Windows native
-pipeline.
+This folder contains the narrow C++ boundary used to communicate with the Rust
+DLL from the Windows runner.
 
 ## Files
 
-- `rust_bridge.h`: public bridge contract used by native request filtering.
-- `rust_bridge.cpp`: implementation of the bridge contract.
+- `rust_bridge.h`: public native bridge contract shared by the Windows runner.
+- `rust_bridge.cpp`: Rust DLL loading, symbol resolution, executor
+  registration, native event forwarding, and request-filter bridge functions.
 
-## What This Folder Does
+## What This Folder Owns
 
-- Accepts request metadata from the native WebView2 interception layer.
-- Forwards `url` and `resource_type` values to Rust-owned filtering logic.
-- Returns a boolean allow/block decision to the caller in native C++.
+- Resolving `netra_rust.dll` and caching required function pointers.
+- Registering native executor callbacks so Rust can create tabs, load URLs, and
+  control navigation directly in WebView2.
+- Forwarding structured native browser events into `netra_handle_native_event`.
+- Exposing `ShouldBlockRequest` to the request interception layer.
 
-## Work Done
+## Active Runtime Role
 
-- Stable function boundary (`ShouldBlockRequest`) is defined and documented.
-- Bridge implementation is wired and callable from request interception code.
-- Clear ownership is set: C++ only translates values, Rust owns policy logic.
+This bridge is more than a request-filter hook now:
+
+- `RegisterRustNativeExecutor()` binds the Windows WebView2 control surface to
+  Rust's `native_control` layer.
+- `SendNativeEventToRust()` forwards C++ browser events into the Rust core.
+- `ShouldBlockRequest()` preserves the filtering contract used by
+  `request_filter.cpp`.
 
 ## Current Limitation
 
-- Current implementation is intentionally stubbed and always returns `false`.
-- Real filtering decision logic will be completed when Rust request pipeline
-  integration is finalized.
+`ShouldBlockRequest()` is still a stub and always returns `false`, so the
+native interception path is wired but not yet enforcing Rust-owned filtering
+policy.

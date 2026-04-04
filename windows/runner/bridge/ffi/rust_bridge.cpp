@@ -3,15 +3,11 @@
 #include <windows.h>
 #include <wrl.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "bridge/webview2/webview_manager.h"
-
-/// Emits a tab-created event into the Flutter event stream.
-void EmitTabCreated(const std::string& tab_id);
-
-/// Emits a tab-closed event into the Flutter event stream.
-void EmitTabClosed(const std::string& tab_id);
 
 namespace {
 
@@ -97,7 +93,6 @@ int __cdecl CreateTabBridge(const char* raw_tab_id) {
       [tab_id](HRESULT status, ICoreWebView2Controller* controller) {
         if (SUCCEEDED(status) && controller != nullptr) {
           WebViewManager::GetInstance().SetActiveTab(tab_id);
-          EmitTabCreated(tab_id);
         }
       });
 
@@ -112,12 +107,7 @@ int __cdecl CloseTabBridge(const char* raw_tab_id) {
   }
 
   const HRESULT result = WebViewManager::GetInstance().DestroyController(tab_id);
-  if (SUCCEEDED(result)) {
-    EmitTabClosed(tab_id);
-    return 1;
-  }
-
-  return 0;
+  return SUCCEEDED(result) ? 1 : 0;
 }
 
 /// Marks the provided native tab as active.
@@ -227,20 +217,73 @@ bool ShouldBlockRequest(const std::string& url,
   return false;
 }
 
-void RegisterRustNativeExecutor() {
-  HMODULE rust_module = ::GetModuleHandleW(L"netra_rust.dll");
-  if (rust_module == nullptr) {
-    rust_module = ::LoadLibraryW(L"netra_rust.dll");
-  }
+using HandleNativeEventFn = int(__cdecl*)(FfiNativeBrowserEvent);
 
-  if (rust_module == nullptr) {
+/// Cached Rust DLL handle resolved once during the first FFI call.
+static HMODULE g_rust_module = nullptr;
+
+/// Cached function pointer to `netra_handle_native_event` in the Rust DLL.
+static HandleNativeEventFn g_handle_native_event = nullptr;
+
+/// Cached function pointer to `netra_register_native_executor` in the Rust DLL.
+static RegisterNativeExecutorFn g_register_native_executor = nullptr;
+
+/// Resolves the Rust DLL handle and caches all required function pointers.
+///
+/// This function is called lazily on the first FFI interaction and is a no-op
+/// on every subsequent call.  All WebView2 event callbacks run on the UI thread
+/// so no synchronisation is required for the static cache.
+static void EnsureRustBindings() {
+  if (g_rust_module != nullptr) {
     return;
   }
 
-  auto register_native_executor =
-      reinterpret_cast<RegisterNativeExecutorFn>(
-          ::GetProcAddress(rust_module, "netra_register_native_executor"));
-  if (register_native_executor == nullptr) {
+  g_rust_module = ::GetModuleHandleW(L"netra_rust.dll");
+  if (g_rust_module == nullptr) {
+    g_rust_module = ::LoadLibraryW(L"netra_rust.dll");
+  }
+
+  if (g_rust_module == nullptr) {
+    std::printf("[C++] Failed to resolve netra_rust.dll\n");
+    return;
+  }
+
+  g_handle_native_event = reinterpret_cast<HandleNativeEventFn>(
+      ::GetProcAddress(g_rust_module, "netra_handle_native_event"));
+  if (g_handle_native_event == nullptr) {
+    std::printf("[C++] Failed to resolve netra_handle_native_event\n");
+  }
+
+  g_register_native_executor = reinterpret_cast<RegisterNativeExecutorFn>(
+      ::GetProcAddress(g_rust_module, "netra_register_native_executor"));
+  if (g_register_native_executor == nullptr) {
+    std::printf("[C++] Failed to resolve netra_register_native_executor\n");
+  }
+}
+
+void FreeEventStrings(const FfiNativeBrowserEvent& event) {
+  std::free(event.tab_id);
+  std::free(event.primary_string);
+  std::free(event.secondary_string);
+}
+
+void SendNativeEventToRust(const FfiNativeBrowserEvent& event) {
+  EnsureRustBindings();
+
+  if (g_handle_native_event == nullptr) {
+    FreeEventStrings(event);
+    return;
+  }
+
+  const int status = g_handle_native_event(event);
+  std::printf("[C++] Rust event handoff status: %d\n", status);
+  FreeEventStrings(event);
+}
+
+void RegisterRustNativeExecutor() {
+  EnsureRustBindings();
+
+  if (g_register_native_executor == nullptr) {
     return;
   }
 
@@ -249,7 +292,7 @@ void RegisterRustNativeExecutor() {
       &GoBackBridge,      &GoForwardBridge, &ReloadBridge,      &StopLoadingBridge,
   };
 
-  (void)register_native_executor(bindings);
+  (void)g_register_native_executor(bindings);
 }
 
 }  // namespace netra::bridge::ffi

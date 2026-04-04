@@ -26,7 +26,7 @@ pub struct History {
 /// - tab creation, deletion, activation ownership
 /// - WebView or platform-layer interaction
 /// - async execution or thread management
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct NavigationController {
     /// Per-tab navigation history storage.
     pub histories: HashMap<TabId, History>,
@@ -113,6 +113,14 @@ impl NavigationController {
             .unwrap_or(false)
     }
 
+    /// Removes all navigation history owned by the specified tab.
+    ///
+    /// This is used when a tab is permanently closed so stale per-tab history
+    /// entries do not remain in Rust state after the tab lifecycle ends.
+    pub fn remove_tab_history(&mut self, tab_id: &str) {
+        self.histories.remove(tab_id);
+    }
+
     /// Normalizes raw navigation input into a final URL.
     ///
     /// Normalization pipeline:
@@ -177,5 +185,25 @@ impl NavigationController {
         }
 
         octets.into_iter().all(|octet| octet.parse::<u8>().is_ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_tab_history_clears_only_target_tab_history() {
+        let mut controller = NavigationController::new();
+        let first_tab_id = "first-tab".to_string();
+        let second_tab_id = "second-tab".to_string();
+
+        controller.navigate(first_tab_id.clone(), "example.com".to_string());
+        controller.navigate(second_tab_id.clone(), "openai.com".to_string());
+
+        controller.remove_tab_history(&first_tab_id);
+
+        assert!(!controller.histories.contains_key(&first_tab_id));
+        assert!(controller.histories.contains_key(&second_tab_id));
     }
 }

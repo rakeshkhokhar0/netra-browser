@@ -16,6 +16,11 @@ pub enum BrowserEvent {
         tab_id: String,
         title: String,
     },
+    /// Fired when the document favicon changes for a frame.
+    FaviconChanged {
+        tab_id: String,
+        favicon_url: String,
+    },
     /// Fired when the URL of a frame changes natively.
     UrlChanged {
         tab_id: String,
@@ -39,6 +44,10 @@ pub enum BrowserEvent {
         url: String,
         error_code: i32,
         description: String,
+    },
+    /// Fired when the native browser process for a tab crashes.
+    TabCrashed {
+        tab_id: String,
     },
     /// Fired when a frame begins downloading page resources.
     LoadStarted {
@@ -68,4 +77,26 @@ pub enum BrowserEvent {
         source_id: Option<String>,
         line_number: Option<i32>,
     },
+}
+
+impl BrowserEvent {
+    /// Returns the active tab identifier scoped to this event.
+    pub fn tab_id(&self) -> &str {
+        match self {
+            Self::FrameCreated { tab_id } => tab_id,
+            Self::FrameDestroyed { tab_id } => tab_id,
+            Self::TitleChanged { tab_id, .. } => tab_id,
+            Self::FaviconChanged { tab_id, .. } => tab_id,
+            Self::UrlChanged { tab_id, .. } => tab_id,
+            Self::NavigationStarted { tab_id, .. } => tab_id,
+            Self::NavigationCompleted { tab_id, .. } => tab_id,
+            Self::NavigationFailed { tab_id, .. } => tab_id,
+            Self::TabCrashed { tab_id } => tab_id,
+            Self::LoadStarted { tab_id } => tab_id,
+            Self::LoadFinished { tab_id } => tab_id,
+            Self::HistoryStateChanged { tab_id, .. } => tab_id,
+            Self::RequestBlocked { tab_id, .. } => tab_id,
+            Self::ConsoleMessage { tab_id, .. } => tab_id,
+        }
+    }
 }

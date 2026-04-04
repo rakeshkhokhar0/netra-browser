@@ -18,6 +18,20 @@ namespace netra::bridge::ffi {
 bool ShouldBlockRequest(const std::string& url,
                         const std::string& resource_type);
 
+/// Describes a strongly typed native browser event used for C++ to Rust FFI.
+struct FfiNativeBrowserEvent {
+    uint32_t sequence_number;
+    int32_t event_type;
+    char* tab_id;
+    char* primary_string;
+    char* secondary_string;
+    int32_t int_value;
+    uint8_t bool_value;
+};
+
+/// Sends a strongly-typed native browser event to the Rust orchestrator.
+void SendNativeEventToRust(const FfiNativeBrowserEvent& event);
+
 /// Registers the native WebView2 executor callbacks with the Rust DLL.
 ///
 /// After registration completes, Rust browser-controller operations can call

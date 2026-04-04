@@ -1,51 +1,60 @@
 # Netra Flutter Layer
 
-The `lib/netra/` directory contains the Flutter-side browser shell.
+The `lib/netra/` directory contains the Flutter-side browser shell and the
+Dart bridge code that talks to Rust and the Windows runner.
 
-## Role In The System
+## What Lives Here
 
-- Renders UI only
-- Sends user actions into the Rust-driven browser pipeline
-- Receives browser events and typed state updates
-- Avoids owning browser-domain logic and persistent browser state
+- `ui/`: app widget tree, shell screens, layouts, visual components, and
+  Riverpod providers.
+- `engine/`: typed engine contracts plus the WebView2 adapter that exposes the
+  Rust-driven browser event stream.
+- `ffi/`: Dart FFI bootstrap and the direct Rust bridge used for browser
+  commands, state snapshots, and native event registration.
+- `infrastructure/`: platform transport helpers such as the MethodChannel
+  bridge used for `setBounds`.
+- `di/`: dependency registration for the shell.
+- `core/`: shared Dart entities for browser, bookmark, download, history, and
+  filter-list data.
+- `shared/`: app configuration, shared errors, and file utilities.
 
-## Layer Breakdown
+## Current Responsibility Split
 
-- `ui/`
-  - tab strip, toolbar, address bar, layout, and screens
-- `engine/`
-  - typed browser events and engine-facing Dart contracts
-- `ffi/`
-  - Rust bridge bootstrap and Dart FFI entry points
-- `infrastructure/`
-  - Dart bridge adapters and transport helpers
-- `di/`
-  - dependency wiring
-- `core/`
-  - shared Dart-side models and event contracts used by the shell
-- `shared/`
-  - configuration, errors, and utilities
+- Flutter renders the browser shell and user-facing screens.
+- `BrowserProvider` treats Rust snapshots as authoritative and refreshes UI
+  state from `netra_get_browser_state_json`.
+- `TabProvider` owns only tab lifecycle commands and does not store browser
+  state.
+- `WebView2Adapter` is event-only on the Dart side. Direct tab and navigation
+  control no longer belong to the adapter layer.
 
-## Architecture Rules
+## Command and Event Paths
 
-- Flutter is stateless relative to browser-domain ownership
-- Rust owns all browser logic and state
-- Flutter reacts to events and renders current state
-- No duplicate browser state should be introduced in Dart
+- Tab and navigation commands go from Dart to Rust through `ffi/bridge.dart`.
+- Native bounds updates go from Dart to the Windows runner through
+  `infrastructure/bridge/method_channel_bridge.dart`.
+- Browser events come back from Rust as typed `BrowserEvent` instances and are
+  consumed by the providers in `ui/providers/`.
 
-## Current Status
+## Important Rules
 
-Phase 2 is complete on the Rust side.
+- Do not introduce a second source of truth for tabs, navigation, or loading
+  state in Dart.
+- Prefer reflecting Rust-owned state over reconstructing browser state locally.
+- Keep infrastructure and engine adapters transport-focused and free of browser
+  business logic.
 
-The Flutter layer is prepared for Phase 3 integration:
+## Current State
 
-- browser shell structure exists
-- typed event models exist
-- bridge bootstrap is in place
-- UI integration against the finalized Rust event flow is the next step
+This folder is now actively wired into the runtime rather than being only a
+placeholder shell:
 
-## Phase 3 Focus
+- `BridgeInitializer` starts the Rust bridge during app boot.
+- `BrowserShell` creates the initial tab after the first frame when needed.
+- Riverpod providers react to Rust-owned browser events and snapshots.
+- The UI can drive tab lifecycle, navigation, and native bounds updates.
 
-- connect Dart event handling to the unified Rust event pipeline
-- bind UI state to Rust-driven tab and navigation updates
-- complete WebView2/native bridge integration with the shell
+Known limitation:
+
+- The Flutter-to-native MethodChannel currently supports only the `setBounds`
+  layout command. Browser actions themselves are routed through Rust.

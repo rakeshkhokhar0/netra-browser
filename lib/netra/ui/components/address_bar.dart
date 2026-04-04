@@ -52,7 +52,8 @@ class _AddressBarState extends ConsumerState<AddressBar> {
     final activeTabState = browserState.tabs.firstWhereOrNull(
       (tab) => tab.id == browserState.activeTabId,
     );
-    final currentUrl = activeTabState?.url ?? '';
+    final currentUrl = _displayUrl(activeTabState?.url ?? '');
+    final isLoading = activeTabState?.isLoading ?? false;
 
     if (!_focusNode.hasFocus && _controller.text != currentUrl) {
       _controller.value = TextEditingValue(
@@ -69,10 +70,20 @@ class _AddressBarState extends ConsumerState<AddressBar> {
             focusNode: _focusNode,
             enabled: widget.isEnabled,
             textInputAction: TextInputAction.go,
-            decoration: const InputDecoration(
-              hintText: 'Enter a URL',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              hintText: 'Search or enter address',
+              border: const OutlineInputBorder(),
               isDense: true,
+              suffixIcon: isLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : null,
             ),
             onSubmitted: _submit,
           ),
@@ -119,6 +130,15 @@ class _AddressBarState extends ConsumerState<AddressBar> {
         ),
       );
     }
+  }
+
+  String _displayUrl(String url) {
+    final normalizedUrl = url.trim().toLowerCase();
+    if (normalizedUrl == 'about' || normalizedUrl == 'about:blank') {
+      return '';
+    }
+
+    return url;
   }
 }
 

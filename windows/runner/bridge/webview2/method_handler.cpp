@@ -13,12 +13,6 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
-/// Emits a tab-created event into the Flutter event stream.
-void EmitTabCreated(const std::string& tab_id);
-
-/// Emits a tab-closed event into the Flutter event stream.
-void EmitTabClosed(const std::string& tab_id);
-
 namespace {
 
 using EncodableMap = flutter::EncodableMap;
@@ -91,34 +85,6 @@ std::optional<RECT> ReadBoundsArgument(const EncodableMap& arguments,
       .bottom = *bottom_value,
   };
 }
-
-/// Converts a UTF-8 string into a wide string for WebView2 APIs.
-std::wstring ToWide(const std::string& value) {
-  if (value.empty()) {
-    return std::wstring();
-  }
-
-  const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-  std::wstring wide_value(static_cast<size_t>(size), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide_value.data(), size);
-  wide_value.pop_back();
-  return wide_value;
-}
-
-/// Resolves a WebView instance from a tab id using the manager-owned controller.
-Microsoft::WRL::ComPtr<ICoreWebView2> GetWebViewForTab(const std::string& tab_id) {
-  Microsoft::WRL::ComPtr<ICoreWebView2> webview;
-  ICoreWebView2Controller* controller =
-      WebViewManager::GetInstance().GetController(tab_id);
-  if (controller == nullptr) {
-    return webview;
-  }
-
-  controller->get_CoreWebView2(&webview);
-  return webview;
-}
-
-/// Reports a generic invalid-argument error back to Flutter.
 void ReturnInvalidArguments(MethodResult* result, const char* message) {
   result->Error("invalid_arguments", message);
 }
@@ -157,82 +123,6 @@ void HandleMethodCall(HWND parent_window,
 
   const auto* arguments = std::get_if<EncodableMap>(call.arguments());
 
-  if (call.method_name() == "createTab") {
-    if (arguments == nullptr) {
-      ReturnInvalidArguments(result.get(), "createTab requires arguments.");
-      return;
-    }
-
-    const auto tab_id = ReadStringArgument(*arguments, "tab_id");
-    if (!tab_id.has_value()) {
-      ReturnInvalidArguments(result.get(), "createTab requires a non-empty tab_id.");
-      return;
-    }
-
-    RECT bounds{};
-    ::GetClientRect(parent_window, &bounds);
-
-    if (!WebViewManager::GetInstance().IsInitialized()) {
-      result->Error(
-          "engine_not_ready",
-          "WebView2 environment is still initializing. Try again in a moment.");
-      return;
-    }
-
-    std::shared_ptr<MethodResult> shared_result(std::move(result));
-    const std::string created_tab_id = *tab_id;
-
-    const HRESULT create_result = WebViewManager::GetInstance().CreateController(
-        *tab_id, bounds,
-        [shared_result, created_tab_id](HRESULT status,
-                                        ICoreWebView2Controller* controller) {
-          if (FAILED(status) || controller == nullptr) {
-            ReturnHresultError(shared_result.get(), "createTab", status);
-            return;
-          }
-
-          EmitTabCreated(created_tab_id);
-          shared_result->Success(EncodableValue(true));
-        });
-
-    if (FAILED(create_result)) {
-      ReturnHresultError(shared_result.get(), "createTab", create_result);
-    }
-
-    return;
-  }
-
-  if (call.method_name() == "closeTab") {
-    if (arguments == nullptr) {
-      ReturnInvalidArguments(result.get(), "closeTab requires arguments.");
-      return;
-    }
-
-    const auto tab_id = ReadStringArgument(*arguments, "tab_id");
-    if (!tab_id.has_value()) {
-      ReturnInvalidArguments(result.get(), "closeTab requires a non-empty tab_id.");
-      return;
-    }
-
-    const HRESULT destroy_result =
-        WebViewManager::GetInstance().DestroyController(*tab_id);
-    if (FAILED(destroy_result)) {
-      ReturnHresultError(result.get(), "closeTab", destroy_result);
-      return;
-    }
-
-    EmitTabClosed(*tab_id);
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "clearData") {
-    result->Error(
-        "not_supported",
-        "clearData requires profile access support in WebViewManager.");
-    return;
-  }
-
   if (arguments == nullptr) {
     ReturnInvalidArguments(result.get(), "Method requires arguments.");
     return;
@@ -255,92 +145,6 @@ void HandleMethodCall(HWND parent_window,
         WebViewManager::GetInstance().SetBounds(*tab_id, *bounds);
     if (FAILED(bounds_result)) {
       ReturnHresultError(result.get(), "setBounds", bounds_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  ICoreWebView2Controller* controller =
-      WebViewManager::GetInstance().GetController(*tab_id);
-  if (controller == nullptr) {
-    result->Error("missing_tab", "No controller exists for the provided tab_id.");
-    return;
-  }
-
-  Microsoft::WRL::ComPtr<ICoreWebView2> webview = GetWebViewForTab(*tab_id);
-  if (!webview) {
-    result->Error("missing_webview", "No WebView instance exists for the tab.");
-    return;
-  }
-
-  if (call.method_name() == "navigate") {
-    const auto url = ReadStringArgument(*arguments, "url");
-    if (!url.has_value()) {
-      ReturnInvalidArguments(result.get(), "navigate requires a non-empty url.");
-      return;
-    }
-
-    const HRESULT navigate_result = webview->Navigate(ToWide(*url).c_str());
-    if (FAILED(navigate_result)) {
-      ReturnHresultError(result.get(), "navigate", navigate_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "goBack") {
-    const HRESULT back_result = webview->GoBack();
-    if (FAILED(back_result)) {
-      ReturnHresultError(result.get(), "goBack", back_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "goForward") {
-    const HRESULT forward_result = webview->GoForward();
-    if (FAILED(forward_result)) {
-      ReturnHresultError(result.get(), "goForward", forward_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "reload") {
-    const HRESULT reload_result = webview->Reload();
-    if (FAILED(reload_result)) {
-      ReturnHresultError(result.get(), "reload", reload_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "setActiveTab") {
-    const HRESULT visible_result =
-        WebViewManager::GetInstance().SetActiveTab(*tab_id);
-    if (FAILED(visible_result)) {
-      ReturnHresultError(result.get(), "setActiveTab", visible_result);
-      return;
-    }
-
-    result->Success(EncodableValue(true));
-    return;
-  }
-
-  if (call.method_name() == "stopLoading") {
-    const HRESULT stop_result = webview->Stop();
-    if (FAILED(stop_result)) {
-      ReturnHresultError(result.get(), "stopLoading", stop_result);
       return;
     }
 

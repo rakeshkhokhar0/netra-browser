@@ -60,12 +60,54 @@ typedef _TwoStringOperationNative = Int32 Function(Pointer<Utf8>, Pointer<Utf8>)
 typedef _TwoStringOperationDart = int Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef _StringFreeNative = Void Function(Pointer<Utf8>);
 typedef _StringFreeDart = void Function(Pointer<Utf8>);
-typedef _HandleEventNative = Int32 Function(Pointer<Utf8>);
-typedef _HandleEventDart = int Function(Pointer<Utf8>);
 typedef _CreateTabIdNative = Pointer<Utf8> Function();
 typedef _CreateTabIdDart = Pointer<Utf8> Function();
 typedef _GetBrowserStateJsonNative = Pointer<Utf8> Function();
 typedef _GetBrowserStateJsonDart = Pointer<Utf8> Function();
+
+final class FfiTabState extends Struct {
+  external Pointer<Utf8> tabId;
+  external Pointer<Utf8> url;
+  external Pointer<Utf8> title;
+  external Pointer<Utf8> faviconUrl;
+
+  @Uint8()
+  external int isActive;
+
+  @Uint8()
+  external int isLoading;
+
+  @Uint8()
+  external int canGoBack;
+
+  @Uint8()
+  external int canGoForward;
+
+  @Uint8()
+  external int isSuspended;
+
+  @Uint32()
+  external int blockedCount;
+
+  @Uint32()
+  external int sequenceNumber;
+}
+
+final class FfiBrowserEvent extends Struct {
+  @Uint32()
+  external int sequenceNumber;
+
+  @Int32()
+  external int eventType;
+
+  external Pointer<Utf8> tabId;
+  external Pointer<Utf8> faviconUrl;
+  external FfiTabState tabState;
+}
+
+typedef _FlutterEventCallbackNative = Void Function(FfiBrowserEvent);
+typedef _RegisterEventDispatcherNative = Int32 Function(Pointer<NativeFunction<_FlutterEventCallbackNative>>);
+typedef _RegisterEventDispatcherDart = int Function(Pointer<NativeFunction<_FlutterEventCallbackNative>>);
 
 /// Thin FFI adapter that translates Dart calls into Rust library calls.
 class RustBridge {
@@ -109,9 +151,9 @@ class RustBridge {
           library.lookupFunction<_StringOperationNative, _StringOperationDart>(
             'netra_stop_loading',
           ),
-      _handleEvent =
-          library.lookupFunction<_HandleEventNative, _HandleEventDart>(
-            'netra_handle_event_json',
+      _registerEventDispatcher =
+          library.lookupFunction<_RegisterEventDispatcherNative, _RegisterEventDispatcherDart>(
+            'netra_register_event_dispatcher',
           ),
       _getBrowserStateJson = library.lookupFunction<
         _GetBrowserStateJsonNative,
@@ -131,11 +173,18 @@ class RustBridge {
   final _StringOperationDart _goForward;
   final _StringOperationDart _reload;
   final _StringOperationDart _stopLoading;
-  final _HandleEventDart _handleEvent;
+  final _RegisterEventDispatcherDart _registerEventDispatcher;
   final _GetBrowserStateJsonDart _getBrowserStateJson;
   final _StringFreeDart _stringFree;
   final StreamController<EngineEvent> _engineEvents =
       StreamController<EngineEvent>.broadcast();
+
+  final StreamController<Map<String, dynamic>> _browserEvents =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  Stream<Map<String, dynamic>> get browserEvents => _browserEvents.stream;
+
+  late final NativeCallable<_FlutterEventCallbackNative> _eventListener;
 
   static final RustBridge instance = RustBridge.open();
 
@@ -275,18 +324,103 @@ class RustBridge {
     return WebView2NativeExecutor.setBounds(tabId, x, y, width, height);
   }
 
-  /// Forwards a raw native browser event payload into the Rust core.
-  Future<void> handleEvent(Map<String, dynamic> event) async {
-    final eventPointer = jsonEncode(event).toNativeUtf8();
+  void _initDispatcher() {
+    _eventListener = NativeCallable<_FlutterEventCallbackNative>.listener(_onNativeEvent);
+    _registerEventDispatcher(_eventListener.nativeFunction);
+  }
 
-    try {
-      final status = _handleEvent(eventPointer);
-      if (status != 1) {
-        throw StateError('Rust handleEvent failed.');
-      }
-    } finally {
-      malloc.free(eventPointer);
+  static void _onNativeEvent(FfiBrowserEvent event) {
+    String safeString(Pointer<Utf8> ptr) {
+      if (ptr == nullptr) return '';
+      final str = ptr.toDartString();
+      RustBridge.instance._stringFree(ptr);
+      return str;
     }
+
+    Map<String, dynamic>? safeTabState(FfiTabState ffiTabState) {
+      final tabId = safeString(ffiTabState.tabId);
+      final url = safeString(ffiTabState.url);
+      final title = safeString(ffiTabState.title);
+      final faviconUrl = safeString(ffiTabState.faviconUrl);
+
+      if (tabId.isEmpty) {
+        return null;
+      }
+
+      return {
+        'id': tabId,
+        'url': url,
+        'title': title,
+        'faviconUrl': faviconUrl.isEmpty ? null : faviconUrl,
+        'isActive': ffiTabState.isActive != 0,
+        'isLoading': ffiTabState.isLoading != 0,
+        'canGoBack': ffiTabState.canGoBack != 0,
+        'canGoForward': ffiTabState.canGoForward != 0,
+        'isSuspended': ffiTabState.isSuspended != 0,
+        'blockedCount': ffiTabState.blockedCount,
+        'sequenceNumber': ffiTabState.sequenceNumber,
+      };
+    }
+
+    final seq = event.sequenceNumber;
+    final tabId = safeString(event.tabId);
+    final faviconUrl = safeString(event.faviconUrl);
+    print('[Flutter] Event received from Rust');
+    final tabState = safeTabState(event.tabState);
+
+    String eventName;
+
+    switch (event.eventType) {
+      case 1:
+        eventName = 'navigationStarting';
+        break;
+      case 2:
+        eventName = 'frameCreated';
+        break;
+      case 3:
+        eventName = 'frameDestroyed';
+        break;
+      case 4:
+        eventName = 'contentLoading';
+        break;
+      case 5:
+        eventName = 'navigationCompleted';
+        break;
+      case 6:
+        eventName = 'titleChanged';
+        break;
+      case 7:
+        eventName = 'historyChanged';
+        break;
+      case 8:
+        eventName = 'requestBlocked';
+        break;
+      case 9:
+        eventName = 'navigationFailed';
+        break;
+      case 10:
+        eventName = 'urlChanged';
+        break;
+      case 11:
+        eventName = 'loadFinished';
+        break;
+      case 12:
+        eventName = 'faviconChanged';
+        break;
+      case 13:
+        eventName = 'tabCrashed';
+        break;
+      default:
+        return; // Ignore
+    }
+
+    RustBridge.instance._browserEvents.add({
+      'type': eventName,
+      'tabId': tabId,
+      'faviconUrl': faviconUrl,
+      'sequenceNumber': seq,
+      'tabState': tabState,
+    });
   }
 
   /// Returns the current browser-state snapshot owned by the Rust core.
@@ -305,7 +439,9 @@ class RustBridge {
 
   /// Disposes the bridge-side event stream.
   Future<void> dispose() async {
+    _eventListener.close();
     await _engineEvents.close();
+    await _browserEvents.close();
   }
 
   static String get _libraryName {
@@ -352,5 +488,5 @@ class RustBridge {
 
 /// Initializes the Rust engine bridge for the current process.
 Future<void> initEngine() async {
-  RustBridge.instance;
+  RustBridge.instance._initDispatcher();
 }

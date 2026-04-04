@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use uuid::Uuid;
 use crate::core::entities::tab::{Tab, TabId};
+use crate::core::error::NetraError;
+use uuid::Uuid;
 
 /// Owns tab lifecycle, active-tab transitions, suspension, and LRU background
 /// memory policy for the browser engine.
@@ -12,28 +13,42 @@ use crate::core::entities::tab::{Tab, TabId};
 /// - background (non-active, non-suspended) tabs are limited by LRU policy
 /// - idle background tabs are suspended after five minutes
 /// - lifecycle operations emit [TabEvent]
+#[derive(Clone)]
 pub struct TabManager {
     tabs: HashMap<TabId, Tab>,
+    tab_order: Vec<TabId>,
     active_tab_id: Option<TabId>,
+    max_tabs: usize,
     max_background_tabs: usize,
 }
 
 impl TabManager {
-    const DEFAULT_MAX_BACKGROUND_TABS: usize = 5;
-    const IDLE_SUSPEND_AFTER: Duration = Duration::from_secs(5 * 60);
+    const DEFAULT_MAX_TABS: usize = 20;
+    const DEFAULT_MAX_BACKGROUND_TABS: usize = 10;
+    const IDLE_SUSPEND_AFTER: Duration = Duration::from_secs(2 * 60);
 
     /// Creates a manager with the default background-tab limit.
     pub fn new() -> Self {
         Self {
             tabs: HashMap::new(),
+            tab_order: Vec::new(),
             active_tab_id: None,
+            max_tabs: Self::DEFAULT_MAX_TABS,
             max_background_tabs: Self::DEFAULT_MAX_BACKGROUND_TABS,
         }
     }
 
     /// Creates a new tab, activates it, applies LRU background suspension, and
     /// emits [TabEvent::TabCreated].
-    pub fn create_tab(&mut self) -> Tab {
+    pub fn create_tab(&mut self) -> Result<Tab, NetraError> {
+        self.check_idle_suspension();
+        if self.tabs.len() >= self.max_tabs {
+            return Err(NetraError::OperationFailed(format!(
+                "maximum tab limit of {} reached",
+                self.max_tabs,
+            )));
+        }
+
         let id = Uuid::new_v4().to_string();
         self.deactivate_current_active();
 
@@ -41,22 +56,25 @@ impl TabManager {
             id: id.clone(),
             url: "about".to_string(),
             title: String::new(),
+            favicon_url: None,
             is_active: false,
             is_loading: false,
             is_suspended: false,
             can_go_back: false,
             can_go_forward: false,
             blocked_count: 0,
+            sequence_number: 0,
             last_accessed: Instant::now(),
         };
         tab.is_active = true;
         tab.last_accessed = Instant::now();
 
         self.tabs.insert(id.clone(), tab.clone());
+        self.tab_order.push(id.clone());
         self.active_tab_id = Some(id.clone());
 
-        self.enforce_background_tab_limit();
-        tab
+        self.apply_suspension_policies();
+        Ok(tab)
     }
 
     /// Closes the given tab and emits [TabEvent::TabClosed] when removed.
@@ -68,17 +86,17 @@ impl TabManager {
         if self.tabs.remove(&tab_id).is_none() {
             return false;
         }
+        self.tab_order.retain(|existing_id| existing_id != &tab_id);
 
         if !was_active {
             return true;
         }
 
         self.active_tab_id = None;
-        if let Some(next_id) = self.tabs.keys().next().cloned() {
+        if let Some(next_id) = self.tab_order.first().cloned() {
             if let Some(next_tab) = self.tabs.get_mut(&next_id) {
                 next_tab.is_active = true;
                 next_tab.is_suspended = false;
-                next_tab.is_loading = true;
                 next_tab.last_accessed = Instant::now();
                 self.active_tab_id = Some(next_id);
             }
@@ -96,6 +114,8 @@ impl TabManager {
     /// - previous active tab is deactivated
     /// - target tab is marked active and timestamped
     pub fn set_active_tab(&mut self, tab_id: String) -> bool {
+        self.check_idle_suspension();
+
         if !self.tabs.contains_key(&tab_id) {
             return false;
         }
@@ -118,13 +138,16 @@ impl TabManager {
         }
 
         self.active_tab_id = Some(tab_id.clone());
-        self.enforce_background_tab_limit();
+        self.apply_suspension_policies();
         true
     }
 
     /// Returns a cloned snapshot of all tracked tabs.
     pub fn get_all_tabs(&self) -> Vec<Tab> {
-        self.tabs.values().cloned().collect()
+        self.tab_order
+            .iter()
+            .filter_map(|tab_id| self.tabs.get(tab_id).cloned())
+            .collect()
     }
 
     /// Returns whether the target tab exists in the manager.
@@ -135,6 +158,19 @@ impl TabManager {
     /// Returns a cloned snapshot of the specified tab when it exists.
     pub fn get_tab(&self, tab_id: &str) -> Option<Tab> {
         self.tabs.get(tab_id).cloned()
+    }
+
+    /// Returns whether the specified tab is currently suspended.
+    pub fn is_tab_suspended(&self, tab_id: &str) -> bool {
+        self.tabs
+            .get(tab_id)
+            .map(|tab| tab.is_suspended)
+            .unwrap_or(false)
+    }
+
+    /// Returns the number of tabs currently tracked by the manager.
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
     }
 
     /// Returns the identifier of the currently active tab, if any.
@@ -178,6 +214,13 @@ impl TabManager {
         }
     }
 
+    /// Updates only the favicon URL for a specific tab.
+    pub fn update_favicon_url(&mut self, tab_id: &str, favicon_url: Option<String>) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.update_favicon_url(favicon_url);
+        }
+    }
+
     /// Updates the loading flag for a specific tab.
     pub fn set_loading_state(&mut self, tab_id: &str, is_loading: bool) {
         if let Some(tab) = self.tabs.get_mut(tab_id) {
@@ -212,7 +255,6 @@ impl TabManager {
     /// This method intentionally does not change active-tab ownership.
     /// It only applies resume-state fields:
     /// - `is_suspended = false`
-    /// - `is_loading = true`
     /// - `last_accessed = now`
     ///
     /// Any active-tab switch must be performed by [Self::set_active_tab].
@@ -228,13 +270,12 @@ impl TabManager {
 
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
             tab.is_suspended = false;
-            tab.is_loading = true;
             tab.last_accessed = Instant::now();
         }
     }
 
     /// Suspends idle background tabs that have been inactive for more than
-    /// five minutes.
+    /// two minutes.
     pub fn check_idle_suspension(&mut self) {
         let now = Instant::now();
         let to_suspend: Vec<TabId> = self
@@ -259,6 +300,20 @@ impl TabManager {
                 active_tab.is_active = false;
             }
         }
+    }
+
+    fn apply_suspension_policies(&mut self) {
+        self.check_idle_suspension();
+        self.enforce_background_tab_limit();
+    }
+
+    /// Increments and returns the sequence number for the given tab.
+    pub fn increment_sequence(&mut self, tab_id: &str) -> u32 {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.sequence_number = tab.sequence_number.wrapping_add(1);
+            return tab.sequence_number;
+        }
+        0
     }
 
     /// Enforces LRU suspension for background tabs.
@@ -303,19 +358,21 @@ mod tests {
     #[test]
     fn create_tab_sets_new_tab_active() {
         let mut manager = TabManager::new();
-        let tab = manager.create_tab();
+        let tab = manager.create_tab().expect("tab should be created");
 
         assert_eq!(manager.active_tab_id.as_deref(), Some(tab.id.as_str()));
         assert!(manager.tabs.get(&tab.id).map(|t| t.is_active).unwrap_or(false));
+        assert_eq!(manager.tab_order, vec![tab.id]);
     }
 
     #[test]
     fn create_tab_deactivates_previous_active_tab() {
         let mut manager = TabManager::new();
-        let first = manager.create_tab();
-        let second = manager.create_tab();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
 
         assert_eq!(manager.active_tab_id.as_deref(), Some(second.id.as_str()));
+        assert_eq!(manager.tab_order, vec![first.id.clone(), second.id.clone()]);
         assert!(
             !manager
                 .tabs
@@ -326,14 +383,17 @@ mod tests {
     }
 
     #[test]
-    fn lru_suspends_oldest_background_tabs() {
+    fn lru_suspends_oldest_background_tabs_when_background_limit_exceeded() {
         let mut manager = TabManager::new();
-        let first = manager.create_tab();
+        let first = manager.create_tab().expect("first tab should be created");
 
         // Create enough tabs so backgrounds exceed the limit.
         let mut latest = first.id.clone();
-        for _ in 0..6 {
-            latest = manager.create_tab().id;
+        for _ in 0..11 {
+            latest = manager
+                .create_tab()
+                .expect("tab should be created within max limit")
+                .id;
         }
 
         // Mark oldest background tab as very old to make it deterministic LRU.
@@ -350,31 +410,66 @@ mod tests {
             .values()
             .filter(|t| !t.is_active && !t.is_suspended)
             .count();
-        assert_eq!(background_count, 5);
+        assert_eq!(background_count, 10);
     }
 
     #[test]
     fn close_active_tab_promotes_another_tab() {
         let mut manager = TabManager::new();
-        let first = manager.create_tab();
-        let second = manager.create_tab();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
 
         manager.close_tab(second.id.clone());
 
         assert_eq!(manager.active_tab_id.as_deref(), Some(first.id.as_str()));
+        assert_eq!(manager.tab_order, vec![first.id.clone()]);
         assert!(manager.tabs.get(&first.id).map(|t| t.is_active).unwrap_or(false));
     }
 
     #[test]
-    fn check_idle_suspension_suspends_old_background_tabs() {
+    fn get_all_tabs_preserves_creation_order() {
         let mut manager = TabManager::new();
-        let first = manager.create_tab();
-        let second = manager.create_tab();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+        let third = manager.create_tab().expect("third tab should be created");
+
+        let ordered_ids: Vec<String> = manager
+            .get_all_tabs()
+            .into_iter()
+            .map(|tab| tab.id)
+            .collect();
+
+        assert_eq!(ordered_ids, vec![first.id, second.id, third.id]);
+    }
+
+    #[test]
+    fn close_middle_tab_preserves_remaining_order() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+        let third = manager.create_tab().expect("third tab should be created");
+
+        manager.close_tab(second.id);
+
+        let ordered_ids: Vec<String> = manager
+            .get_all_tabs()
+            .into_iter()
+            .map(|tab| tab.id)
+            .collect();
+
+        assert_eq!(ordered_ids, vec![first.id, third.id]);
+    }
+
+    #[test]
+    fn check_idle_suspension_suspends_background_tabs_after_two_minutes() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
 
         if let Some(tab) = manager.tabs.get_mut(&first.id) {
             tab.is_active = false;
             tab.is_suspended = false;
-            tab.last_accessed = Instant::now() - Duration::from_secs(10 * 60);
+            tab.last_accessed = Instant::now() - Duration::from_secs(3 * 60);
         }
         manager.set_active_tab(second.id.clone());
 
@@ -386,6 +481,69 @@ mod tests {
                 .get(&first.id)
                 .map(|tab| tab.is_suspended)
                 .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn resuming_suspended_tab_does_not_mark_it_loading() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+
+        manager.suspend_tab(first.id.clone());
+        manager.set_active_tab(first.id.clone());
+
+        let resumed_tab = manager.get_tab(&first.id).expect("tab should exist");
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(first.id.as_str()));
+        assert!(resumed_tab.is_active);
+        assert!(!resumed_tab.is_suspended);
+        assert!(!resumed_tab.is_loading);
+        assert!(
+            !manager
+                .get_tab(&second.id)
+                .map(|tab| tab.is_active)
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn closing_active_tab_does_not_force_promoted_tab_into_loading() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+
+        manager.close_tab(second.id);
+
+        let promoted_tab = manager.get_tab(&first.id).expect("tab should exist");
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(first.id.as_str()));
+        assert!(promoted_tab.is_active);
+        assert!(!promoted_tab.is_suspended);
+        assert!(!promoted_tab.is_loading);
+    }
+
+    #[test]
+    fn create_tab_rejects_creation_after_max_tab_limit() {
+        let mut manager = TabManager::new();
+
+        for _ in 0..TabManager::DEFAULT_MAX_TABS {
+            manager
+                .create_tab()
+                .expect("tab should be created within max tab limit");
+        }
+
+        let error = manager
+            .create_tab()
+            .expect_err("tab creation should fail after max tab limit");
+
+        assert_eq!(manager.tab_count(), TabManager::DEFAULT_MAX_TABS);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "operation failed: maximum tab limit of {} reached",
+                TabManager::DEFAULT_MAX_TABS,
+            ),
         );
     }
 }

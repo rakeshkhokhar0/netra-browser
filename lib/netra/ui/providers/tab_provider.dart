@@ -1,9 +1,22 @@
 import 'dart:developer' as developer;
+import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:netra_browser/netra/ffi/bridge.dart';
 
 import 'browser_provider.dart';
+
+/// Thrown when Rust rejects tab creation because the hard tab limit was hit.
+class TabLimitReachedException implements Exception {
+  /// Creates a typed tab-limit failure using the authoritative Rust tab count.
+  const TabLimitReachedException(this.limit);
+
+  /// Maximum number of tabs currently allowed by the Rust core.
+  final int limit;
+
+  @override
+  String toString() => 'Tab limit reached ($limit tabs).';
+}
 
 /// Exposes the tab-operation provider used by the Flutter shell.
 ///
@@ -27,19 +40,29 @@ class TabProvider {
   /// Creates a lifecycle-only tab provider backed by the Rust bridge.
   TabProvider(this._ref, this._rust);
 
+  /// Mirrors the current Rust-owned hard tab cap for user-facing messaging.
+  static const int maxTabs = 20;
+
   final Ref _ref;
   final RustBridge _rust;
+  Future<void> _createQueue = Future<void>.value();
 
   /// Creates a new browser tab and makes it the active tab.
   ///
   /// Rust generates the identifier and returns it to Flutter as the single
   /// authoritative tab ID for the rest of the app lifecycle.
   Future<String> createTab() async {
-    _logDebug('createTab -> Rust only');
-    final rustTab = await _rust.createTab();
-    await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
+    final completer = Completer<String>();
 
-    return rustTab.id;
+    _createQueue = _createQueue.catchError((_) {}).then((_) async {
+      try {
+        completer.complete(await _createTabOnce());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+
+    return completer.future;
   }
 
   /// Closes the browser tab associated with [tabId].
@@ -47,6 +70,10 @@ class TabProvider {
     _logDebug('closeTab -> Rust only');
     await _rust.closeTab(tabId: tabId);
     await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
+
+    if (_ref.read(browserStateProvider).tabs.isEmpty) {
+      await createTab();
+    }
   }
 
   /// Switches the active browser tab to [tabId].
@@ -58,5 +85,25 @@ class TabProvider {
 
   void _logDebug(String message) {
     developer.log(message, name: 'NetraBrowser');
+  }
+
+  Future<String> _createTabOnce() async {
+    _logDebug('createTab -> Rust only');
+    final currentTabCount = _ref.read(browserStateProvider).tabs.length;
+    if (currentTabCount >= maxTabs) {
+      throw const TabLimitReachedException(maxTabs);
+    }
+
+    try {
+      final rustTab = await _rust.createTab();
+      return rustTab.id;
+    } on StateError {
+      final rustState = await _rust.getBrowserState();
+      final refreshedTabCount = rustState.tabs.length;
+      if (refreshedTabCount >= maxTabs) {
+        throw TabLimitReachedException(refreshedTabCount);
+      }
+      rethrow;
+    }
   }
 }

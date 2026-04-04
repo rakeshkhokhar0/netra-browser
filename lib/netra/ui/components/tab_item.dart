@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tab_state.dart';
-import '../providers/browser_provider.dart';
 import '../providers/tab_provider.dart';
 
 /// Renders a single browser tab item inside the tab strip.
@@ -47,7 +46,7 @@ class TabItem extends ConsumerWidget {
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () => ref.read(browserProvider).setActiveTab(tab.id),
+          onTap: () => ref.read(tabProvider).switchTab(tab.id),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOut,
@@ -60,6 +59,12 @@ class TabItem extends ConsumerWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                _TabFavicon(
+                  faviconUrl: tab.faviconUrl,
+                  isLoading: tab.isLoading,
+                  color: foregroundColor,
+                ),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     _displayTitle,
@@ -95,9 +100,54 @@ class TabItem extends ConsumerWidget {
     if (tab.title.trim().isNotEmpty) {
       return tab.title.trim();
     }
+    final normalizedUrl = tab.url.trim().toLowerCase();
+    if (normalizedUrl == 'about' || normalizedUrl == 'about:blank') {
+      return 'New Tab';
+    }
     if (tab.url.trim().isNotEmpty) {
       return tab.url.trim();
     }
     return 'New Tab';
+  }
+}
+
+class _TabFavicon extends StatelessWidget {
+  const _TabFavicon({
+    required this.faviconUrl,
+    required this.isLoading,
+    required this.color,
+  });
+
+  final String? faviconUrl;
+  final bool isLoading;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+
+    final normalizedUrl = faviconUrl?.trim() ?? '';
+    if (normalizedUrl.isEmpty) {
+      return Icon(Icons.language, size: 16, color: color);
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Image.network(
+        normalizedUrl,
+        width: 16,
+        height: 16,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) {
+          return Icon(Icons.language, size: 16, color: color);
+        },
+      ),
+    );
   }
 }

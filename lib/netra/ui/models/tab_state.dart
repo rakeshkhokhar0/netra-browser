@@ -11,12 +11,14 @@ class TabState {
     required this.id,
     required this.title,
     required this.url,
+    this.faviconUrl,
     required this.isActive,
     required this.isLoading,
     required this.canGoBack,
     required this.canGoForward,
     required this.isSuspended,
     required this.blockedCount,
+    this.sequenceNumber = 0,
   });
 
   /// Stable tab identifier originating from the Rust core.
@@ -27,6 +29,9 @@ class TabState {
 
   /// Current visible URL for the tab.
   final String url;
+
+  /// Current favicon URL for the tab, when provided by Rust.
+  final String? faviconUrl;
 
   /// Whether this tab is the active tab in the browser state.
   final bool isActive;
@@ -46,6 +51,9 @@ class TabState {
   /// Number of requests blocked for this tab by the Rust core.
   final int blockedCount;
 
+  /// Monotonic event generation counter from the Rust core.
+  final int sequenceNumber;
+
   /// Creates a [TabState] from a decoded JSON or map payload.
   ///
   /// Missing values fall back to safe defaults so the UI layer can decode
@@ -55,6 +63,9 @@ class TabState {
       id: map['id'] as String? ?? '',
       title: map['title'] as String? ?? '',
       url: map['url'] as String? ?? '',
+      faviconUrl:
+          map['favicon_url'] as String? ??
+          map['faviconUrl'] as String?,
       isActive: map['is_active'] as bool? ?? map['isActive'] as bool? ?? false,
       isLoading:
           map['is_loading'] as bool? ?? map['isLoading'] as bool? ?? false,
@@ -70,6 +81,8 @@ class TabState {
           false,
       blockedCount:
           map['blocked_count'] as int? ?? map['blockedCount'] as int? ?? 0,
+      sequenceNumber:
+          map['sequence_number'] as int? ?? map['sequenceNumber'] as int? ?? 0,
     );
   }
 
@@ -78,23 +91,27 @@ class TabState {
     String? id,
     String? title,
     String? url,
+    String? faviconUrl,
     bool? isActive,
     bool? isLoading,
     bool? canGoBack,
     bool? canGoForward,
     bool? isSuspended,
     int? blockedCount,
+    int? sequenceNumber,
   }) {
     return TabState(
       id: id ?? this.id,
       title: title ?? this.title,
       url: url ?? this.url,
+      faviconUrl: faviconUrl ?? this.faviconUrl,
       isActive: isActive ?? this.isActive,
       isLoading: isLoading ?? this.isLoading,
       canGoBack: canGoBack ?? this.canGoBack,
       canGoForward: canGoForward ?? this.canGoForward,
       isSuspended: isSuspended ?? this.isSuspended,
       blockedCount: blockedCount ?? this.blockedCount,
+      sequenceNumber: sequenceNumber ?? this.sequenceNumber,
     );
   }
 }

@@ -14,9 +14,6 @@ class BinaryMessenger;
 void RegisterWebViewMethodHandler(flutter::BinaryMessenger* messenger,
                                   HWND parent_window);
 
-/// Registers the native browser EventChannel surface with the Flutter engine.
-void RegisterWebViewEventEmitter(flutter::BinaryMessenger* messenger);
-
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -39,9 +36,8 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   // Restore the native bridge startup path so the Windows runner exposes the
-  // WebView2 method and event channels again.
+  // WebView2 method channel and Rust FFI bridge.
   auto* messenger = flutter_controller_->engine()->messenger();
-  RegisterWebViewEventEmitter(messenger);
   RegisterWebViewMethodHandler(messenger, GetHandle());
   WebViewManager::GetInstance().Initialize(GetHandle(), [](HRESULT) {});
   netra::bridge::ffi::RegisterRustNativeExecutor();

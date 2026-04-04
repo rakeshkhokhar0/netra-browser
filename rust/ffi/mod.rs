@@ -1,6 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 use std::ffi::{CStr, CString, c_char};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[path = "../browser/mod.rs"]
 pub mod browser;
@@ -23,6 +24,7 @@ pub mod api;
 pub mod native_control;
 
 static NETRA_CONNECTION_MESSAGE: &[u8] = b"Netra Rust bridge connected\0";
+static EVENT_DISPATCHER_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Returns a simple integer used to prove the Rust DLL loaded successfully.
 #[unsafe(no_mangle)]
@@ -113,28 +115,27 @@ pub extern "C" fn netra_stop_loading(tab_id: *const c_char) -> i32 {
     with_string_arg(tab_id, api::engine_api::stop_loading)
 }
 
-/// Routes a native browser event, encoded as JSON, into the Rust core.
-#[unsafe(no_mangle)]
-pub extern "C" fn netra_handle_event_json(event_json: *const c_char) -> i32 {
-    let Some(event_json) = read_utf8_string(event_json) else {
+fn with_string_arg<F>(ptr: *const c_char, operation: F) -> i32
+where
+    F: FnOnce(String) -> Result<(), crate::core::error::NetraError>,
+{
+    if ptr.is_null() {
         return 0;
-    };
-
-    let event = match decode_browser_event(&event_json) {
-        Ok(event) => event,
-        Err(error) => {
-            eprintln!("[FFI:C] failed to decode browser event JSON: {error}");
-            return 0;
-        }
-    };
-
-    match api::engine_api::handle_event(event) {
-        Ok(()) => 1,
-        Err(error) => {
-            eprintln!("[FFI:C] handle_event failed: {error}");
-            0
-        }
     }
+    let arg = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    if operation(arg).is_ok() { 1 } else { 0 }
+}
+
+fn with_two_string_args<F>(ptr1: *const c_char, ptr2: *const c_char, operation: F) -> i32
+where
+    F: FnOnce(String, String) -> Result<(), crate::core::error::NetraError>,
+{
+    if ptr1.is_null() || ptr2.is_null() {
+        return 0;
+    }
+    let arg1 = unsafe { std::ffi::CStr::from_ptr(ptr1) }.to_string_lossy().into_owned();
+    let arg2 = unsafe { std::ffi::CStr::from_ptr(ptr2) }.to_string_lossy().into_owned();
+    if operation(arg1, arg2).is_ok() { 1 } else { 0 }
 }
 
 /// Returns the current Rust-owned browser-state snapshot encoded as JSON.
@@ -151,6 +152,8 @@ pub extern "C" fn netra_get_browser_state_json() -> *mut c_char {
         }
     };
 
+    println!("[Rust] State snapshot generated");
+
     match serde_json::to_string(&browser_state)
         .ok()
         .and_then(|json| CString::new(json).ok())
@@ -165,171 +168,263 @@ pub extern "C" fn netra_get_browser_state_json() -> *mut c_char {
 
 /// Frees a C string previously allocated by this library.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn netra_string_free(pointer: *mut c_char) {
-    if pointer.is_null() {
+pub unsafe extern "C" fn netra_string_free(ptr: *mut c_char) {
+    if ptr.is_null() {
         return;
     }
 
-    let _ = unsafe { CString::from_raw(pointer) };
+    let _ = unsafe { CString::from_raw(ptr) };
 }
 
-fn with_string_arg(
-    raw_value: *const c_char,
-    operation: impl FnOnce(String) -> Result<(), crate::core::error::NetraError>,
-) -> i32 {
-    let Some(value) = read_utf8_string(raw_value) else {
-        return 0;
-    };
-
-    match operation(value) {
-        Ok(()) => 1,
-        Err(error) => {
-            eprintln!("[FFI:C] operation failed: {error}");
-            0
-        }
-    }
+#[repr(C)]
+pub struct FfiTabState {
+    pub tab_id: *mut c_char,
+    pub url: *mut c_char,
+    pub title: *mut c_char,
+    pub favicon_url: *mut c_char,
+    pub is_active: u8,
+    pub is_loading: u8,
+    pub can_go_back: u8,
+    pub can_go_forward: u8,
+    pub is_suspended: u8,
+    pub blocked_count: u32,
+    pub sequence_number: u32,
 }
 
-fn with_two_string_args(
-    first_raw: *const c_char,
-    second_raw: *const c_char,
-    operation: impl FnOnce(String, String) -> Result<(), crate::core::error::NetraError>,
-) -> i32 {
-    let Some(first) = read_utf8_string(first_raw) else {
-        return 0;
-    };
-    let Some(second) = read_utf8_string(second_raw) else {
-        return 0;
-    };
-
-    match operation(first, second) {
-        Ok(()) => 1,
-        Err(error) => {
-            eprintln!("[FFI:C] operation failed: {error}");
-            0
-        }
-    }
+#[repr(C)]
+pub struct FfiBrowserEvent {
+    pub sequence_number: u32,
+    pub event_type: i32,
+    pub tab_id: *mut c_char,
+    pub favicon_url: *mut c_char,
+    pub tab_state: FfiTabState,
 }
 
-fn read_utf8_string(raw_value: *const c_char) -> Option<String> {
-    if raw_value.is_null() {
-        eprintln!("[FFI:C] received null string pointer");
+#[repr(C)]
+pub struct FfiNativeBrowserEvent {
+    pub sequence_number: u32,
+    pub event_type: i32,
+    pub tab_id: *mut c_char,
+    pub primary_string: *mut c_char,
+    pub secondary_string: *mut c_char,
+    pub int_value: i32,
+    pub bool_value: u8,
+}
+
+fn copy_c_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
         return None;
     }
 
-    let c_str = unsafe { CStr::from_ptr(raw_value) };
-    match c_str.to_str() {
-        Ok(value) => Some(value.to_string()),
-        Err(error) => {
-            eprintln!("[FFI:C] invalid UTF-8 string: {error}");
-            None
-        }
-    }
+    let c_string = unsafe { CStr::from_ptr(ptr) };
+    Some(c_string.to_string_lossy().into_owned())
 }
 
-fn decode_browser_event(
-    event_json: &str,
-) -> Result<crate::core::entities::browser_event::BrowserEvent, serde_json::Error> {
-    let value: serde_json::Value = serde_json::from_str(event_json)?;
-    let event_type = value
-        .get("type")
-        .and_then(|field| field.as_str())
-        .unwrap_or_default();
-    let tab_id = value
-        .get("tabId")
-        .or_else(|| value.get("tab_id"))
-        .and_then(|field| field.as_str())
-        .unwrap_or_default()
-        .to_string();
+/// Routes a native browser event directly into the Rust core.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn netra_handle_native_event(event: FfiNativeBrowserEvent) -> i32 {
+    let tab_id = copy_c_string(event.tab_id.cast_const()).unwrap_or_default();
+    let primary_string = copy_c_string(event.primary_string.cast_const()).unwrap_or_default();
+    let secondary_string = copy_c_string(event.secondary_string.cast_const()).unwrap_or_default();
 
     use crate::core::entities::browser_event::BrowserEvent;
-
-    let event = match event_type {
-        "navigationStarting" => BrowserEvent::NavigationStarted {
+    let browser_event = match event.event_type {
+        1 => BrowserEvent::NavigationStarted {
             tab_id,
-            url: string_field(&value, "url"),
-            is_same_document: bool_field(&value, "isSameDocument"),
+            url: primary_string,
+            is_same_document: event.bool_value != 0,
         },
-        "TabCreated" => BrowserEvent::FrameCreated { tab_id },
-        "TabClosed" => BrowserEvent::FrameDestroyed { tab_id },
-        "contentLoading" => BrowserEvent::LoadStarted { tab_id },
-        "navigationCompleted" => BrowserEvent::NavigationCompleted {
+        2 => BrowserEvent::FrameCreated { tab_id },
+        3 => BrowserEvent::FrameDestroyed { tab_id },
+        4 => BrowserEvent::LoadStarted { tab_id },
+        5 => BrowserEvent::NavigationCompleted {
             tab_id,
-            url: string_field(&value, "url"),
-            is_same_document: bool_field(&value, "isSameDocument"),
+            url: primary_string,
+            is_same_document: event.bool_value != 0,
         },
-        "titleChanged" => BrowserEvent::TitleChanged {
+        6 => BrowserEvent::TitleChanged {
             tab_id,
-            title: string_field(&value, "title"),
+            title: primary_string,
         },
-        "faviconChanged" => BrowserEvent::ConsoleMessage {
+        12 => BrowserEvent::FaviconChanged {
             tab_id,
-            level: "info".to_string(),
-            message: format!("favicon changed: {}", string_field(&value, "faviconUrl")),
-            source_id: None,
-            line_number: None,
+            favicon_url: primary_string,
         },
-        "historyChanged" => BrowserEvent::HistoryStateChanged {
+        7 => BrowserEvent::HistoryStateChanged {
             tab_id,
-            can_go_back: bool_field_alias(&value, "canGoBack", "can_go_back"),
-            can_go_forward: bool_field_alias(&value, "canGoForward", "can_go_forward"),
+            can_go_back: (event.int_value & 1) != 0,
+            can_go_forward: (event.int_value & 2) != 0,
         },
-        "requestBlocked" => BrowserEvent::RequestBlocked {
+        8 => BrowserEvent::RequestBlocked {
             tab_id,
-            url: string_field(&value, "url"),
-            resource_type: string_field_alias(&value, "resourceType", "resource_type"),
+            url: primary_string,
+            resource_type: secondary_string,
         },
-        "tabCrashed" => BrowserEvent::NavigationFailed {
+        9 => BrowserEvent::NavigationFailed {
             tab_id,
-            url: string_field(&value, "url"),
-            error_code: -1,
-            description: "tab crashed".to_string(),
+            url: primary_string,
+            error_code: event.int_value,
+            description: secondary_string,
         },
-        "engineReady" => BrowserEvent::FrameCreated { tab_id },
-        "urlChanged" => BrowserEvent::UrlChanged {
+        10 => BrowserEvent::UrlChanged {
             tab_id,
-            url: string_field(&value, "url"),
+            url: primary_string,
         },
+        11 => BrowserEvent::LoadFinished { tab_id },
+        13 => BrowserEvent::TabCrashed { tab_id },
         _ => BrowserEvent::ConsoleMessage {
             tab_id,
             level: "debug".to_string(),
-            message: format!("unmapped event: {event_type}"),
+            message: format!("unmapped ffi event type: {}", event.event_type),
             source_id: None,
             line_number: None,
         },
     };
 
-    Ok(event)
+    println!("[Rust] Event received: {:?}", browser_event);
+
+    match api::engine_api::handle_event(browser_event) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("[FFI:C] handle_event failed: {error}");
+            0
+        }
+    }
 }
 
-fn string_field(value: &serde_json::Value, field: &str) -> String {
-    value
-        .get(field)
-        .and_then(|field| field.as_str())
-        .unwrap_or_default()
-        .to_string()
+pub type FlutterEventCallback = extern "C" fn(FfiBrowserEvent);
+
+static FLUTTER_EVENT_CALLBACK: once_cell::sync::Lazy<std::sync::Mutex<Option<FlutterEventCallback>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+#[unsafe(no_mangle)]
+pub extern "C" fn netra_register_event_dispatcher(callback: FlutterEventCallback) -> i32 {
+    if EVENT_DISPATCHER_REGISTERED.swap(true, Ordering::SeqCst) {
+        eprintln!("[FFI] Event dispatcher already registered — skipping");
+        return 1;
+    }
+
+    match FLUTTER_EVENT_CALLBACK.lock() {
+        Ok(mut callback_guard) => {
+            *callback_guard = Some(callback);
+        }
+        Err(error) => {
+            eprintln!("[FFI] Callback mutex poisoned: {}", error);
+            return 0;
+        }
+    }
+
+    let handler = std::sync::Arc::new(|seq: u32, event: crate::core::entities::browser_event::BrowserEvent, current_tab: Option<crate::core::entities::tab::Tab>| {
+        match FLUTTER_EVENT_CALLBACK.lock() {
+            Ok(callback_guard) => {
+                if let Some(cb) = *callback_guard {
+                    if let Some(ffi_event) =
+                        to_ffi_browser_event(seq, &event, current_tab.as_ref())
+                    {
+                        cb(ffi_event);
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("[FFI] Callback mutex poisoned: {}", error);
+            }
+        }
+    });
+
+    let dispatcher = crate::browser::event_dispatcher::EventDispatcher::new(handler);
+
+    match crate::browser::browser_controller::BrowserController::subscribe_safe(Box::new(
+        move |event| {
+            if let crate::core::events::event_bus::Event::BrowserEvent(
+                seq,
+                browser_event,
+                current_tab,
+            ) = event
+            {
+                dispatcher
+                    .handler
+                    .as_ref()(*seq, browser_event.clone(), current_tab.clone());
+            }
+        },
+    )) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("[FFI] Failed to register event dispatcher: {}", error);
+            0
+        }
+    }
 }
 
-fn string_field_alias(value: &serde_json::Value, primary: &str, fallback: &str) -> String {
-    value
-        .get(primary)
-        .or_else(|| value.get(fallback))
-        .and_then(|field| field.as_str())
-        .unwrap_or_default()
-        .to_string()
+fn to_ffi_tab_state(tab: Option<&crate::core::entities::tab::Tab>) -> FfiTabState {
+    match tab {
+        Some(tab) => FfiTabState {
+            tab_id: CString::new(tab.id.clone()).unwrap().into_raw(),
+            url: CString::new(tab.url.clone()).unwrap().into_raw(),
+            title: CString::new(tab.title.clone()).unwrap().into_raw(),
+            favicon_url: tab
+                .favicon_url
+                .clone()
+                .and_then(|favicon_url| CString::new(favicon_url).ok())
+                .map(CString::into_raw)
+                .unwrap_or(std::ptr::null_mut()),
+            is_active: u8::from(tab.is_active),
+            is_loading: u8::from(tab.is_loading),
+            can_go_back: u8::from(tab.can_go_back),
+            can_go_forward: u8::from(tab.can_go_forward),
+            is_suspended: u8::from(tab.is_suspended),
+            blocked_count: tab.blocked_count,
+            sequence_number: tab.sequence_number,
+        },
+        None => FfiTabState {
+            tab_id: std::ptr::null_mut(),
+            url: std::ptr::null_mut(),
+            title: std::ptr::null_mut(),
+            favicon_url: std::ptr::null_mut(),
+            is_active: 0,
+            is_loading: 0,
+            can_go_back: 0,
+            can_go_forward: 0,
+            is_suspended: 0,
+            blocked_count: 0,
+            sequence_number: 0,
+        },
+    }
 }
 
-fn bool_field(value: &serde_json::Value, field: &str) -> bool {
-    value
-        .get(field)
-        .and_then(|field| field.as_bool())
-        .unwrap_or(false)
-}
+fn to_ffi_browser_event(
+    sequence_number: u32,
+    event: &crate::core::entities::browser_event::BrowserEvent,
+    current_tab: Option<&crate::core::entities::tab::Tab>,
+) -> Option<FfiBrowserEvent> {
+    use crate::core::entities::browser_event::BrowserEvent;
 
-fn bool_field_alias(value: &serde_json::Value, primary: &str, fallback: &str) -> bool {
-    value
-        .get(primary)
-        .or_else(|| value.get(fallback))
-        .and_then(|field| field.as_bool())
-        .unwrap_or(false)
+    let (event_type, tab_id, favicon_url) = match event {
+        BrowserEvent::NavigationStarted { tab_id, .. } => (1, tab_id.as_str(), None),
+        BrowserEvent::FrameCreated { tab_id } => (2, tab_id.as_str(), None),
+        BrowserEvent::FrameDestroyed { tab_id } => (3, tab_id.as_str(), None),
+        BrowserEvent::LoadStarted { tab_id } => (4, tab_id.as_str(), None),
+        BrowserEvent::NavigationCompleted { tab_id, .. } => (5, tab_id.as_str(), None),
+        BrowserEvent::TitleChanged { tab_id, .. } => (6, tab_id.as_str(), None),
+        BrowserEvent::HistoryStateChanged { tab_id, .. } => (7, tab_id.as_str(), None),
+        BrowserEvent::RequestBlocked { tab_id, .. } => (8, tab_id.as_str(), None),
+        BrowserEvent::NavigationFailed { tab_id, .. } => (9, tab_id.as_str(), None),
+        BrowserEvent::UrlChanged { tab_id, .. } => (10, tab_id.as_str(), None),
+        BrowserEvent::LoadFinished { tab_id } => (11, tab_id.as_str(), None),
+        BrowserEvent::FaviconChanged { tab_id, favicon_url } => {
+            (12, tab_id.as_str(), Some(favicon_url.as_str()))
+        }
+        BrowserEvent::TabCrashed { tab_id } => (13, tab_id.as_str(), None),
+        BrowserEvent::ConsoleMessage { .. } => return None,
+    };
+
+    Some(FfiBrowserEvent {
+        sequence_number,
+        event_type,
+        tab_id: CString::new(tab_id).unwrap().into_raw(),
+        favicon_url: favicon_url
+            .and_then(|url| CString::new(url).ok())
+            .map(CString::into_raw)
+            .unwrap_or(std::ptr::null_mut()),
+        tab_state: to_ffi_tab_state(current_tab),
+    })
 }

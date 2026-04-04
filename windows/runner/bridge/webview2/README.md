@@ -1,35 +1,39 @@
 # WebView2 Native Bridge
 
-This folder contains the Windows WebView2 integration used by the Flutter
-desktop shell.
+This folder contains the Windows WebView2 hosting code used by the Netra
+desktop runner.
 
 ## File Responsibilities
 
-- `webview_manager.h/.cpp`:
-  - Initializes shared WebView2 environment.
-  - Creates and destroys tab-scoped controllers.
-  - Manages host windows, bounds updates, and active-tab visibility.
-  - Registers browser event callbacks and request interception.
-- `method_handler.cpp`:
-  - Handles Flutter MethodChannel commands and maps arguments to native calls.
-  - Supports tab lifecycle, navigation, reload, stop, bounds, active-tab.
-- `event_emitter.cpp`:
-  - Registers Flutter EventChannel and broadcasts structured browser events.
-- `request_filter.cpp`:
-  - Hooks `WebResourceRequested` and delegates block decisions to Rust bridge.
-- `webview2_bridge_stub.cpp`:
-  - Placeholder file reserved for future native bridge expansion.
+- `webview_manager.h/.cpp`
+  - initializes the shared WebView2 environment
+  - creates one controller and one native host window per tab
+  - tracks active-tab visibility and bounds updates
+  - registers browser event callbacks, request interception, and document
+    script injection
+- `method_handler.cpp`
+  - owns the Flutter MethodChannel entry point
+  - currently validates arguments and handles only the `setBounds` command
+- `event_emitter.cpp`
+  - converts WebView2 callbacks into strongly typed native events for Rust
+- `request_filter.cpp`
+  - hooks `WebResourceRequested` and calls `ShouldBlockRequest`
+- `webview2_bridge_stub.cpp`
+  - reserved placeholder for future Windows bridge expansion
 
-## Work Done
+## Runtime Notes
 
-- Method and event channels are wired into Windows runner startup.
-- Browser command handling is implemented for core tab/navigation operations.
-- Event translation to Flutter map payloads is implemented.
-- Request filtering hook is integrated and connected to FFI bridge contract.
-- UI-thread checks and controller lifecycle handling are in place.
+- The shared WebView2 environment is initialized once and reused across tabs.
+- Browser arguments enable DNS-over-HTTPS for created controllers.
+- Host windows are created as child windows inside the main Flutter runner
+  window.
+- Native browser events such as navigation, title, favicon, history, URL
+  changes, and crashes are forwarded into Rust.
 
 ## Current Limitations
 
-- `clearData` is not supported yet in method handler.
-- Script injection currently uses a stub script placeholder.
-- Rust block decision is currently a stub return path in FFI implementation.
+- The MethodChannel surface in this folder is intentionally small and currently
+  supports only `setBounds`.
+- Document-created script injection still uses a placeholder stub.
+- Request interception is wired, but blocking is not yet enforced because the
+  FFI bridge still returns `false` for block decisions.

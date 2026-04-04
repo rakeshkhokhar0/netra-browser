@@ -2,25 +2,25 @@ import 'package:netra_browser/netra/core/entities/engine_event.dart';
 import '../../interfaces/i_engine.dart';
 import '../../interfaces/i_frame.dart';
 import '../../models/browser_event.dart';
-import '../../../infrastructure/bridge/event_channel_listener.dart';
+import '../../../ffi/bridge.dart';
 
 /// Implements the shell-side browser engine contract using the native WebView2
 /// bridge.
 ///
 /// This adapter remains a thin translation layer between the platform-agnostic
-/// engine interfaces and the native EventChannel bridge adapter. It owns only
+/// engine interfaces and the Rust-driven native event stream. It owns only
 /// event translation. It does not execute browser control commands, contain
-/// browser business logic, store browser state, or interact with Rust.
+/// browser business logic, or store browser state.
 class WebView2Adapter implements IEngine {
   /// Creates a stateless WebView2 engine adapter.
   const WebView2Adapter();
 
-  /// Shared typed event stream derived from the native EventChannel bridge.
+  /// Shared typed event stream derived from the Rust FFI event dispatcher.
   ///
-  /// Raw native maps are converted into typed [BrowserEvent] instances so the
+  /// Raw bridge maps are converted into typed [BrowserEvent] instances so the
   /// engine layer can subscribe to structured browser events without depending
   /// on infrastructure payload formats.
-  static final Stream<BrowserEvent> _events = EventChannelListener.events
+  static final Stream<BrowserEvent> _events = RustBridge.instance.browserEvents
       .map(BrowserEvent.fromMap)
       .asBroadcastStream();
 
@@ -57,7 +57,7 @@ class WebView2Adapter implements IEngine {
 
   /// Exposes the typed browser event stream as the engine event stream.
   ///
-  /// Each event originates from the native EventChannel bridge and is mapped
+  /// Each event originates from the Rust FFI event dispatcher and is mapped
   /// into a typed [BrowserEvent], which remains compatible with the
   /// [EngineEvent] contract.
   @override

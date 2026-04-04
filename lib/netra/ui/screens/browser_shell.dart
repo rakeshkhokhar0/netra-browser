@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../components/loading_indicator.dart';
 import '../components/tab_strip.dart';
 import '../components/toolbar.dart';
 import '../layouts/browser_layout.dart';
@@ -67,7 +66,6 @@ class _BrowserShellState extends ConsumerState<BrowserShell> {
           Toolbar(
             isEnabled: (browserState.activeTabId ?? '').isNotEmpty,
           ),
-          const LoadingIndicator(),
           Expanded(
             child: Stack(
               fit: StackFit.expand,

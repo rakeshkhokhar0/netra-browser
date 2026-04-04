@@ -33,7 +33,28 @@ class TabStrip extends ConsumerWidget {
           itemBuilder: (context, index) {
             if (index == tabs.length) {
               return IconButton(
-                onPressed: () => ref.read(tabProvider).createTab(),
+                onPressed: () async {
+                  if (tabs.length >= TabProvider.maxTabs) {
+                    _showTabLimitBanner(context);
+                    return;
+                  }
+
+                  try {
+                    await ref.read(tabProvider).createTab();
+                  } on TabLimitReachedException catch (error) {
+                    _showTabLimitBanner(context, message: error.toString());
+                  } catch (_) {
+                    if (!context.mounted) {
+                      return;
+                    }
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Unable to open a new tab.'),
+                      ),
+                    );
+                  }
+                },
                 tooltip: 'New tab',
                 icon: const Icon(Icons.add),
               );
@@ -51,5 +72,27 @@ class TabStrip extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  void _showTabLimitBanner(BuildContext context, {String? message}) {
+    if (!context.mounted) {
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..clearMaterialBanners()
+      ..showMaterialBanner(
+        MaterialBanner(
+          content: Text(message ?? 'Tab limit reached (20 tabs).'),
+          leading: const Icon(Icons.info_outline),
+          actions: [
+            TextButton(
+              onPressed: messenger.hideCurrentMaterialBanner,
+              child: const Text('Dismiss'),
+            ),
+          ],
+        ),
+      );
   }
 }

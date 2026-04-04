@@ -23,70 +23,6 @@ class MethodChannelBridge {
     AppConfig.browserMethodChannelName,
   );
 
-  /// Creates a native browser tab for the provided tab identifier.
-  ///
-  /// The [tabId] value is forwarded to the native bridge as the `tab_id`
-  /// argument expected by the C++ method handler.
-  static Future<void> createTab(String tabId) {
-    return _invoke('createTab', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Closes the native browser tab associated with the provided identifier.
-  ///
-  /// The [tabId] value is forwarded to the native bridge as the `tab_id`
-  /// argument expected by the C++ method handler.
-  static Future<void> closeTab(String tabId) {
-    return _invoke('closeTab', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Navigates the specified tab to the requested URL.
-  ///
-  /// The [tabId] identifies the target tab and [url] provides the destination
-  /// forwarded to the native `navigate` command.
-  static Future<void> navigate(String tabId, String url) {
-    return _invoke('navigate', <String, dynamic>{'tab_id': tabId, 'url': url});
-  }
-
-  /// Requests backward navigation for the specified tab.
-  ///
-  /// The [tabId] value is forwarded as the `tab_id` argument to the native
-  /// `goBack` command.
-  static Future<void> goBack(String tabId) {
-    return _invoke('goBack', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Requests forward navigation for the specified tab.
-  ///
-  /// The [tabId] value is forwarded as the `tab_id` argument to the native
-  /// `goForward` command.
-  static Future<void> goForward(String tabId) {
-    return _invoke('goForward', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Requests a reload of the currently loaded page for the specified tab.
-  ///
-  /// The [tabId] value is forwarded as the `tab_id` argument to the native
-  /// `reload` command.
-  static Future<void> reload(String tabId) {
-    return _invoke('reload', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Stops the current load operation for the specified tab.
-  ///
-  /// The [tabId] value is forwarded as the `tab_id` argument to the native
-  /// `stopLoading` command.
-  static Future<void> stopLoading(String tabId) {
-    return _invoke('stopLoading', <String, dynamic>{'tab_id': tabId});
-  }
-
-  /// Marks the specified tab as the active visible native tab.
-  ///
-  /// The [tabId] value is forwarded as the `tab_id` argument to the native
-  /// `setActiveTab` command.
-  static Future<void> setActiveTab(String tabId) {
-    return _invoke('setActiveTab', <String, dynamic>{'tab_id': tabId});
-  }
-
   /// Updates the native bounds for the specified tab host surface.
   ///
   /// The [tabId] identifies the target tab while [x], [y], [width], and
@@ -108,14 +44,6 @@ class MethodChannelBridge {
         'bottom': (y + height).round(),
       },
     });
-  }
-
-  /// Clears native browser data owned by the WebView2 bridge.
-  ///
-  /// This forwards directly to the native `clearData` command with no
-  /// arguments.
-  static Future<void> clearData() {
-    return _invoke('clearData', <String, dynamic>{});
   }
 
   /// Forwards a method invocation to the shared native MethodChannel.

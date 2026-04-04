@@ -1,4 +1,4 @@
-use crate::browser::browser_controller::{get_browser_controller, BrowserController};
+use crate::browser::browser_controller::BrowserController;
 use crate::core::entities::browser_event::BrowserEvent;
 use crate::core::entities::browser_state::BrowserState;
 use crate::core::entities::tab::Tab;
@@ -6,113 +6,120 @@ use crate::core::error::NetraError;
 
 /// Creates a new browser tab through the shared [BrowserController].
 ///
-/// This FFI entry point performs no business logic. It logs the call and
-/// delegates creation to the browser controller.
+/// This FFI-facing function is intentionally thin:
+/// - validates no additional business rules
+/// - does not access browser state directly
+/// - does not acquire the browser-controller mutex
+/// - delegates creation to [BrowserController::create_tab_safe]
+///
+/// The created [Tab] is returned so existing bridge layers can reuse the
+/// Rust-generated tab identifier without generating their own.
 #[flutter_rust_bridge::frb(sync)]
 pub fn create_tab() -> Result<Tab, NetraError> {
-    println!("[FFI] create_tab called");
-    with_controller(BrowserController::create_tab)
+    BrowserController::create_tab_safe()
 }
 
-/// Closes an existing browser tab addressed by [tab_id].
+/// Closes the browser tab identified by [tab_id].
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates the close operation to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::close_tab_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn close_tab(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] close_tab called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.close_tab(tab_id))
+    BrowserController::close_tab_safe(tab_id)
 }
 
-/// Marks the provided tab as the active browser tab.
+/// Marks the browser tab identified by [tab_id] as active.
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates active-tab switching to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::set_active_tab_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn set_active_tab(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] set_active_tab called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.set_active_tab(tab_id))
+    BrowserController::set_active_tab_safe(tab_id)
 }
 
-/// Loads the provided [url] in the tab identified by [tab_id].
+/// Navigates the browser tab identified by [tab_id] to [url].
 ///
-/// This FFI entry point validates the incoming arguments, logs the call, and
-/// delegates navigation to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::navigate_safe].
 #[flutter_rust_bridge::frb(sync)]
-pub fn load_url(tab_id: String, url: String) -> Result<(), NetraError> {
-    println!("[FFI] load_url called: {url}");
+pub fn navigate(tab_id: String, url: String) -> Result<(), NetraError> {
     validate_tab_id(&tab_id)?;
     validate_url(&url)?;
-    with_controller(|controller| controller.load_url(tab_id, url))
+    BrowserController::navigate_safe(tab_id, url)
 }
 
-/// Requests backward navigation for the tab identified by [tab_id].
+/// Compatibility wrapper retained for C-boundary callers that still use the
+/// historical `load_url` name.
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates the action to the browser controller.
+/// This wrapper remains a pure delegation layer and forwards directly to
+/// [navigate].
+#[flutter_rust_bridge::frb(sync)]
+pub fn load_url(tab_id: String, url: String) -> Result<(), NetraError> {
+    navigate(tab_id, url)
+}
+
+/// Requests backward navigation for the browser tab identified by [tab_id].
+///
+/// This function performs only input validation before delegating to
+/// [BrowserController::go_back_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn go_back(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] go_back called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.go_back_for_tab(tab_id))
+    BrowserController::go_back_safe(tab_id)
 }
 
-/// Requests forward navigation for the tab identified by [tab_id].
+/// Requests forward navigation for the browser tab identified by [tab_id].
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates the action to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::go_forward_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn go_forward(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] go_forward called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.go_forward_for_tab(tab_id))
+    BrowserController::go_forward_safe(tab_id)
 }
 
-/// Reloads the currently visible document in the tab identified by [tab_id].
+/// Reloads the currently visible document in the browser tab identified by
+/// [tab_id].
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates the action to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::reload_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn reload(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] reload called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.reload_tab(tab_id))
+    BrowserController::reload_safe(tab_id)
 }
 
-/// Stops the current loading operation in the tab identified by [tab_id].
+/// Stops the current loading operation in the browser tab identified by
+/// [tab_id].
 ///
-/// This FFI entry point validates the incoming tab identifier, logs the call,
-/// and delegates the action to the browser controller.
+/// This function performs only input validation before delegating to
+/// [BrowserController::stop_loading_safe].
 #[flutter_rust_bridge::frb(sync)]
 pub fn stop_loading(tab_id: String) -> Result<(), NetraError> {
-    println!("[FFI] stop_loading called: {tab_id}");
     validate_tab_id(&tab_id)?;
-    with_controller(|controller| controller.stop_loading(tab_id))
+    BrowserController::stop_loading_safe(tab_id)
 }
 
 /// Routes a typed native browser event into the Rust browser controller.
 ///
-/// This FFI entry point performs no business logic. It logs the received event
-/// and delegates event publication to the shared browser controller.
+/// This function is a thin handoff to
+/// [BrowserController::handle_browser_event_safe] and does not interpret or
+/// transform event semantics locally.
 #[flutter_rust_bridge::frb(sync)]
 pub fn handle_event(event: BrowserEvent) -> Result<(), NetraError> {
-    println!("[RUST EVENT] {:?}", event);
-    with_controller(|controller| {
-        controller.handle_browser_event(event);
-        Ok(())
-    })
+    BrowserController::handle_browser_event_safe(event)
 }
 
 /// Returns the full browser-state snapshot owned by the Rust core.
 ///
-/// Flutter uses this read-only snapshot to render tab state without mutating
-/// a duplicated local browser model.
+/// This read-only FFI function delegates directly to
+/// [BrowserController::get_browser_state_safe] so Flutter can render the
+/// authoritative Rust state without mutating a duplicate local model.
 #[flutter_rust_bridge::frb(sync)]
 pub fn get_browser_state() -> Result<BrowserState, NetraError> {
-    println!("[FFI] get_browser_state called");
-    with_controller(|controller| Ok(controller.get_browser_state()))
+    BrowserController::get_browser_state_safe()
 }
 
 /// Validates that a tab identifier is present before delegation.
@@ -131,15 +138,4 @@ fn validate_url(url: &str) -> Result<(), NetraError> {
     }
 
     Ok(())
-}
-
-/// Executes a closure against the shared browser controller mutex.
-fn with_controller<T>(
-    operation: impl FnOnce(&mut BrowserController) -> Result<T, NetraError>,
-) -> Result<T, NetraError> {
-    let controller = get_browser_controller();
-    let mut controller = controller
-        .lock()
-        .map_err(|_| NetraError::OperationFailed("browser controller lock poisoned".to_string()))?;
-    operation(&mut controller)
 }

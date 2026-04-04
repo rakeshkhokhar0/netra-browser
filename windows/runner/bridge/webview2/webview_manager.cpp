@@ -8,32 +8,36 @@
 HRESULT RegisterRequestFilter(ICoreWebView2Environment* environment,
                               ICoreWebView2* webview);
 
-/// Emits an engine-ready event into the Flutter event stream.
+/// Emits an engine-ready event into the Rust FFI event pipeline.
 void EmitEngineReady(const std::string& tab_id);
 
-/// Emits a navigation-starting event into the Flutter event stream.
+/// Emits a navigation-starting event into the Rust FFI event pipeline.
 void EmitNavigationStarting(const std::string& tab_id, const std::string& url);
 
-/// Emits a content-loading event into the Flutter event stream.
+/// Emits a content-loading event into the Rust FFI event pipeline.
 void EmitContentLoading(const std::string& tab_id);
 
-/// Emits a URL-changed event into the Flutter event stream.
+/// Emits a URL-changed event into the Rust FFI event pipeline.
 void EmitUrlChanged(const std::string& tab_id, const std::string& url);
 
-/// Emits a navigation-completed event into the Flutter event stream.
+/// Emits a navigation-completed event into the Rust FFI event pipeline.
 void EmitNavigationCompleted(const std::string& tab_id,
                              const std::string& url,
                              bool success);
 
-/// Emits a title-changed event into the Flutter event stream.
+/// Emits a title-changed event into the Rust FFI event pipeline.
 void EmitTitleChanged(const std::string& tab_id, const std::string& title);
 
-/// Emits a history-changed event into the Flutter event stream.
+/// Emits a favicon-changed event into the Rust FFI event pipeline.
+void EmitFaviconChanged(const std::string& tab_id,
+                        const std::string& favicon_url);
+
+/// Emits a history-changed event into the Rust FFI event pipeline.
 void EmitHistoryChanged(const std::string& tab_id,
                         bool can_go_back,
                         bool can_go_forward);
 
-/// Emits a tab-crashed event into the Flutter event stream.
+/// Emits a tab-crashed event into the Rust FFI event pipeline.
 void EmitTabCrashed(const std::string& tab_id);
 
 namespace {
@@ -201,6 +205,32 @@ void RegisterBrowserEvents(const std::string& tab_id, ICoreWebView2* webview) {
           })
           .Get(),
       nullptr);
+
+  Microsoft::WRL::ComPtr<ICoreWebView2_15> webview15;
+  if (SUCCEEDED(webview->QueryInterface(IID_PPV_ARGS(&webview15))) &&
+      webview15) {
+    webview15->add_FaviconChanged(
+        Microsoft::WRL::Callback<ICoreWebView2FaviconChangedEventHandler>(
+            [tab_id](ICoreWebView2* sender, IUnknown* /*args*/) -> HRESULT {
+              if (sender == nullptr) {
+                return S_OK;
+              }
+
+              Microsoft::WRL::ComPtr<ICoreWebView2_15> sender_webview15;
+              if (FAILED(sender->QueryInterface(IID_PPV_ARGS(&sender_webview15))) ||
+                  !sender_webview15) {
+                return S_OK;
+              }
+
+              LPWSTR raw_favicon_uri = nullptr;
+              if (SUCCEEDED(sender_webview15->get_FaviconUri(&raw_favicon_uri))) {
+                EmitFaviconChanged(tab_id, ToUtf8AndFree(raw_favicon_uri));
+              }
+              return S_OK;
+            })
+            .Get(),
+        nullptr);
+  }
 
   webview->add_HistoryChanged(
       Microsoft::WRL::Callback<ICoreWebView2HistoryChangedEventHandler>(

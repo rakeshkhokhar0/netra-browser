@@ -3,6 +3,7 @@ use crate::browser::tab_manager::TabManager;
 use crate::core::entities::browser_event::BrowserEvent;
 use crate::core::entities::browser_state::BrowserState as BrowserStateSnapshot;
 use crate::core::entities::tab::{Tab, TabId};
+use crate::core::error::NetraError;
 
 /// Represents native window geometry tracked by the Rust browser core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub struct WindowBounds {
 /// It delegates tab ownership to [TabManager] and navigation ownership to
 /// [NavigationController], while exposing a deterministic API for higher-level
 /// browser orchestration.
+#[derive(Clone)]
 pub struct BrowserState {
     /// Sole owner of tab lifecycle and tab-state data.
     pub tab_manager: TabManager,
@@ -55,12 +57,13 @@ impl BrowserState {
     }
 
     /// Creates a new tab through [TabManager].
-    pub fn create_tab(&mut self) -> Tab {
+    pub fn create_tab(&mut self) -> Result<Tab, NetraError> {
         self.tab_manager.create_tab()
     }
 
     /// Closes a tab through [TabManager].
     pub fn close_tab(&mut self, tab_id: TabId) {
+        self.navigation_controller.remove_tab_history(&tab_id);
         let _ = self.tab_manager.close_tab(tab_id);
     }
 
@@ -191,6 +194,14 @@ impl BrowserState {
             BrowserEvent::TitleChanged { tab_id, title } => {
                 self.tab_manager.update_title(tab_id, title.clone());
             }
+            BrowserEvent::FaviconChanged { tab_id, favicon_url } => {
+                let next_favicon_url = if favicon_url.trim().is_empty() {
+                    None
+                } else {
+                    Some(favicon_url.clone())
+                };
+                self.tab_manager.update_favicon_url(tab_id, next_favicon_url);
+            }
             BrowserEvent::UrlChanged { tab_id, url } => {
                 self.tab_manager.update_url(tab_id, url.clone());
             }
@@ -222,6 +233,9 @@ impl BrowserState {
                 if !url.trim().is_empty() {
                     self.tab_manager.update_url(tab_id, url.clone());
                 }
+                self.tab_manager.set_loading_state(tab_id, false);
+            }
+            BrowserEvent::TabCrashed { tab_id } => {
                 self.tab_manager.set_loading_state(tab_id, false);
             }
             BrowserEvent::LoadStarted { tab_id } => {
@@ -257,5 +271,29 @@ impl BrowserState {
 impl Default for BrowserState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_tab_removes_navigation_history_for_closed_tab() {
+        let mut state = BrowserState::new();
+        let first_tab = state.create_tab().expect("first tab should be created");
+        let second_tab = state.create_tab().expect("second tab should be created");
+
+        let _ = state.set_active_tab(first_tab.id.clone());
+        let _ = state.navigate("example.com".to_string());
+        let _ = state.set_active_tab(second_tab.id.clone());
+        let _ = state.navigate("openai.com".to_string());
+
+        state.close_tab(first_tab.id.clone());
+
+        assert!(!state.navigation_controller.histories.contains_key(&first_tab.id));
+        assert!(state.navigation_controller.histories.contains_key(&second_tab.id));
+        assert!(!state.contains_tab(&first_tab.id));
+        assert!(state.contains_tab(&second_tab.id));
     }
 }

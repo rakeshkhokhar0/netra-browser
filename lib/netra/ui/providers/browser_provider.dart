@@ -6,7 +6,6 @@ import 'package:netra_browser/netra/di/modules/engine_module.dart';
 import 'package:netra_browser/netra/engine/adapters/webview2/webview2_adapter.dart';
 import 'package:netra_browser/netra/engine/models/browser_event.dart';
 import 'package:netra_browser/netra/ffi/bridge.dart';
-import 'package:netra_browser/netra/shared/utils/url_utils.dart';
 
 import '../models/tab_state.dart';
 
@@ -102,15 +101,14 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
 
   /// Navigates the specified tab to the requested URL via Rust control.
   Future<void> navigate(String tabId, String url) async {
-    final normalizedInput = normalizeNavigationInput(url);
-    if (normalizedInput.isEmpty) {
+    final rawInput = url.trim();
+    if (rawInput.isEmpty) {
       return;
     }
 
     try {
-      _logDebug('loadUrl -> Rust state refresh');
-      await _rust.loadUrl(tabId: tabId, url: normalizedInput);
-      await refreshState(clearErrorMessage: true);
+      _logDebug('loadUrl -> Rust control');
+      await _rust.loadUrl(tabId: tabId, url: rawInput);
     } catch (error) {
       _setError(error);
       rethrow;
@@ -120,9 +118,8 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   /// Requests backward navigation for the specified tab via Rust control.
   Future<void> goBack(String tabId) async {
     try {
-      _logDebug('goBack -> Rust state refresh');
+      _logDebug('goBack -> Rust control');
       await _rust.goBack(tabId: tabId);
-      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
@@ -132,9 +129,8 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   /// Requests forward navigation for the specified tab via Rust control.
   Future<void> goForward(String tabId) async {
     try {
-      _logDebug('goForward -> Rust state refresh');
+      _logDebug('goForward -> Rust control');
       await _rust.goForward(tabId: tabId);
-      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
@@ -144,21 +140,8 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   /// Requests a reload of the specified tab via Rust control.
   Future<void> reload(String tabId) async {
     try {
-      _logDebug('reload -> Rust state refresh');
+      _logDebug('reload -> Rust control');
       await _rust.reload(tabId: tabId);
-      await refreshState(clearErrorMessage: true);
-    } catch (error) {
-      _setError(error);
-      rethrow;
-    }
-  }
-
-  /// Marks the specified tab as the active visible browser tab.
-  Future<void> setActiveTab(String tabId) async {
-    try {
-      _logDebug('setActiveTab -> Rust state refresh');
-      await _rust.setActiveTab(tabId: tabId);
-      await refreshState(clearErrorMessage: true);
     } catch (error) {
       _setError(error);
       rethrow;
@@ -200,6 +183,7 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
         clearErrorMessage: clearErrorMessage,
         nextErrorMessage: errorMessage,
       );
+      print('[Flutter] State refreshed from Rust');
       state = browserState;
     } catch (error) {
       _setError(error);
@@ -214,14 +198,51 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   }
 
   void _handleEvent(BrowserEvent event) {
-    if (event is TabCrashedBrowserEvent) {
-      _scheduleRefresh(
-        errorMessage: 'The active tab crashed while rendering content.',
-      );
+    _logDebug('event received -> authoritative tab update (${event.type})');
+
+    final authoritativeTabMap = event.tabState;
+    if (authoritativeTabMap == null) {
+      if (event.type == 'frameDestroyed') {
+        final remainingTabs = state.tabs
+            .where((tab) => tab.id != event.tabId)
+            .toList(growable: false);
+        state = state.copyWith(
+          tabs: remainingTabs,
+          activeTabId: _resolveActiveTabId(
+            remainingTabs,
+            state.activeTabId,
+          ),
+          clearActiveTabId: remainingTabs.isEmpty,
+          clearErrorMessage: true,
+        );
+        return;
+      }
+
+      _scheduleRefresh(clearErrorMessage: true);
       return;
     }
 
-    _scheduleRefresh(clearErrorMessage: true);
+    final authoritativeTab = TabState.fromMap(authoritativeTabMap);
+    final nextTabs = _applyAuthoritativeTabUpdate(
+      event: event,
+      authoritativeTab: authoritativeTab,
+    );
+
+    state = state.copyWith(
+      tabs: nextTabs,
+      activeTabId: _resolveActiveTabId(
+        nextTabs,
+        authoritativeTab.isActive ? authoritativeTab.id : state.activeTabId,
+      ),
+      clearActiveTabId: nextTabs.isEmpty,
+      errorMessage: switch (event.type) {
+        'navigationFailed' => 'Navigation failed for ${authoritativeTab.url}',
+        'tabCrashed' => 'The current tab crashed and needs to be reloaded.',
+        _ => null,
+      },
+      clearErrorMessage:
+          event.type != 'navigationFailed' && event.type != 'tabCrashed',
+    );
   }
 
   void _scheduleRefresh({
@@ -258,6 +279,7 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
 
     final tabs = rustState.tabs
         .map((rawTab) {
+          // Preserve the exact tab order received from Rust.
           return TabState.fromMap({
             ...rawTab,
             'isActive':
@@ -278,5 +300,54 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
 
   void _logDebug(String message) {
     developer.log(message, name: 'NetraBrowser');
+  }
+
+  List<TabState> _applyAuthoritativeTabUpdate({
+    required BrowserEvent event,
+    required TabState authoritativeTab,
+  }) {
+    // Preserve existing order in Flutter. Only Rust decides tab ordering;
+    // Dart replaces matching tabs in place and appends truly new tabs at end.
+    final nextTabs = state.tabs
+        .where((tab) => tab.id != event.tabId || event.type != 'frameDestroyed')
+        .toList(growable: true);
+    final existingIndex = nextTabs.indexWhere((tab) => tab.id == authoritativeTab.id);
+
+    if (existingIndex >= 0) {
+      if (authoritativeTab.sequenceNumber > 0 &&
+          nextTabs[existingIndex].sequenceNumber > authoritativeTab.sequenceNumber) {
+        return nextTabs;
+      }
+      nextTabs[existingIndex] = authoritativeTab;
+    } else {
+      nextTabs.add(authoritativeTab);
+    }
+
+    if (authoritativeTab.isActive) {
+      for (var index = 0; index < nextTabs.length; index++) {
+        if (nextTabs[index].id != authoritativeTab.id && nextTabs[index].isActive) {
+          nextTabs[index] = nextTabs[index].copyWith(isActive: false);
+        }
+      }
+    }
+
+    return nextTabs;
+  }
+
+  String? _resolveActiveTabId(List<TabState> tabs, String? preferredId) {
+    if (tabs.isEmpty) {
+      return null;
+    }
+
+    final authoritativeActiveTab = tabs.where((tab) => tab.isActive);
+    if (authoritativeActiveTab.isNotEmpty) {
+      return authoritativeActiveTab.first.id;
+    }
+
+    if (preferredId != null && tabs.any((tab) => tab.id == preferredId)) {
+      return preferredId;
+    }
+
+    return tabs.first.id;
   }
 }
