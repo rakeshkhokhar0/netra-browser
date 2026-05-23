@@ -119,4 +119,4 @@ This project is licensed under the **MIT License**.
 ## Author
 
 Built by **Rakesh Khokhar**  
-[LinkedIn] • [GitHub]
+www.linkedin.com/in/rakesh-khokhar-53b221349
