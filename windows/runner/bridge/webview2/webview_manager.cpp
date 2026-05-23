@@ -22,8 +22,13 @@ void EmitUrlChanged(const std::string& tab_id, const std::string& url);
 
 /// Emits a navigation-completed event into the Rust FFI event pipeline.
 void EmitNavigationCompleted(const std::string& tab_id,
-                             const std::string& url,
-                             bool success);
+                             const std::string& url);
+
+/// Emits a navigation-failed event into the Rust FFI event pipeline.
+void EmitNavigationFailed(const std::string& tab_id,
+                          const std::string& url,
+                          int error_code,
+                          const std::string& description);
 
 /// Emits a title-changed event into the Rust FFI event pipeline.
 void EmitTitleChanged(const std::string& tab_id, const std::string& title);
@@ -127,6 +132,48 @@ std::string ToUtf8AndFree(LPWSTR value) {
   return utf8_value;
 }
 
+/// Converts a WebView2 web-error status into a readable string.
+std::string DescribeWebErrorStatus(COREWEBVIEW2_WEB_ERROR_STATUS status) {
+  switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN:
+      return "Unknown web error";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:
+      return "Certificate common name is incorrect";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+      return "Certificate expired";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:
+      return "Client certificate contains errors";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+      return "Certificate revoked";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:
+      return "Certificate is invalid";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
+      return "Server unreachable";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:
+      return "Request timed out";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
+      return "Invalid server response";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:
+      return "Connection aborted";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
+      return "Connection reset";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED:
+      return "Disconnected";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT:
+      return "Cannot connect";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
+      return "Host name not resolved";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED:
+      return "Operation canceled";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED:
+      return "Redirect failed";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
+      return "Unexpected web error";
+    default:
+      return "Navigation failed";
+  }
+}
+
 /// Registers browser event callbacks for a created WebView2 instance.
 void RegisterBrowserEvents(const std::string& tab_id, ICoreWebView2* webview) {
   webview->add_NavigationStarting(
@@ -184,7 +231,19 @@ void RegisterBrowserEvents(const std::string& tab_id, ICoreWebView2* webview) {
               }
             }
 
-            EmitNavigationCompleted(tab_id, url, is_success == TRUE);
+            if (is_success == TRUE) {
+              EmitNavigationCompleted(tab_id, url);
+              return S_OK;
+            }
+
+            COREWEBVIEW2_WEB_ERROR_STATUS web_error_status =
+                COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+            args->get_WebErrorStatus(&web_error_status);
+            EmitNavigationFailed(
+                tab_id,
+                url,
+                static_cast<int>(web_error_status),
+                DescribeWebErrorStatus(web_error_status));
             return S_OK;
           })
           .Get(),

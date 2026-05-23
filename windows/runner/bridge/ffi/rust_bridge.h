@@ -11,6 +11,21 @@
 /// boundary and returns Rust-owned decisions back to WebView2 callers.
 namespace netra::bridge::ffi {
 
+/// Shared native event type identifiers used across C++ and Rust FFI.
+inline constexpr int32_t kEventNavigationStarted = 1;
+inline constexpr int32_t kEventFrameCreated = 2;
+inline constexpr int32_t kEventFrameDestroyed = 3;
+inline constexpr int32_t kEventLoadStarted = 4;
+inline constexpr int32_t kEventNavigationCompleted = 5;
+inline constexpr int32_t kEventTitleChanged = 6;
+inline constexpr int32_t kEventHistoryStateChanged = 7;
+inline constexpr int32_t kEventRequestBlocked = 8;
+inline constexpr int32_t kEventNavigationFailed = 9;
+inline constexpr int32_t kEventUrlChanged = 10;
+inline constexpr int32_t kEventLoadFinished = 11;
+inline constexpr int32_t kEventFaviconChanged = 12;
+inline constexpr int32_t kEventTabCrashed = 13;
+
 /// Asks the Rust core whether a request should be blocked.
 ///
 /// The `url` and `resource_type` values are passed through to the Rust layer,

@@ -10,6 +10,8 @@ pub type NativeStringOperation = unsafe extern "C" fn(*const c_char) -> i32;
 /// Native callback signature used to execute a two-string control command.
 pub type NativeTwoStringOperation =
     unsafe extern "C" fn(*const c_char, *const c_char) -> i32;
+/// Native callback signature used to execute a tab-scoped bounds update.
+pub type NativeSetBoundsOperation = unsafe extern "C" fn(*const c_char, i32, i32, i32, i32) -> i32;
 
 /// Collection of native executor callbacks registered by the Windows runner.
 ///
@@ -36,6 +38,8 @@ pub struct NativeExecutorBindings {
     pub reload: Option<NativeStringOperation>,
     /// Stops loading in the specified native tab.
     pub stop_loading: Option<NativeStringOperation>,
+    /// Updates the native host bounds for the specified tab.
+    pub set_bounds: Option<NativeSetBoundsOperation>,
 }
 
 static NATIVE_EXECUTOR_BINDINGS: OnceCell<NativeExecutorBindings> = OnceCell::new();
@@ -55,6 +59,7 @@ pub fn register(bindings: NativeExecutorBindings) -> Result<(), NetraError> {
         bindings.go_forward.is_some(),
         bindings.reload.is_some(),
         bindings.stop_loading.is_some(),
+        bindings.set_bounds.is_some(),
     ];
 
     if required_callbacks.iter().any(|callback_present| !callback_present) {
@@ -138,6 +143,34 @@ pub fn reload(tab_id: &str) -> Result<(), NetraError> {
 pub fn stop_loading(tab_id: &str) -> Result<(), NetraError> {
     println!("[RUST -> C++] stop_loading({tab_id})");
     invoke_string_operation("stop_loading", tab_id, |bindings| bindings.stop_loading)
+}
+
+/// Updates native host bounds for a tab through the registered Windows executor.
+pub fn set_bounds(
+    tab_id: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), NetraError> {
+    println!("[RUST -> C++] set_bounds({tab_id}, x={x}, y={y}, w={width}, h={height})");
+
+    let bindings = bindings()?;
+    let operation = bindings.set_bounds.ok_or_else(|| {
+        NetraError::OperationFailed("native set_bounds callback is not registered".to_string())
+    })?;
+    let tab_id = CString::new(tab_id).map_err(|_| {
+        NetraError::InvalidInput("set_bounds argument contains an interior null byte".to_string())
+    })?;
+
+    let status = unsafe { operation(tab_id.as_ptr(), x, y, width, height) };
+    if status == 1 {
+        Ok(())
+    } else {
+        Err(NetraError::OperationFailed(
+            "native set_bounds operation failed".to_string(),
+        ))
+    }
 }
 
 fn bindings() -> Result<&'static NativeExecutorBindings, NetraError> {

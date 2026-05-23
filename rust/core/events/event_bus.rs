@@ -22,12 +22,6 @@ pub enum Event {
     TabSuspended(String),
     /// Emitted when a previously suspended tab is resumed.
     TabResumed(String),
-    /// Emitted when a navigation operation completes.
-    ///
-    /// Payload order:
-    /// - tab id
-    /// - resolved URL
-    NavigationCompleted(String, String),
     /// Emitted when a network request is blocked.
     ///
     /// Payload:

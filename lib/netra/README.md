@@ -11,8 +11,6 @@ Dart bridge code that talks to Rust and the Windows runner.
   Rust-driven browser event stream.
 - `ffi/`: Dart FFI bootstrap and the direct Rust bridge used for browser
   commands, state snapshots, and native event registration.
-- `infrastructure/`: platform transport helpers such as the MethodChannel
-  bridge used for `setBounds`.
 - `di/`: dependency registration for the shell.
 - `core/`: shared Dart entities for browser, bookmark, download, history, and
   filter-list data.
@@ -31,8 +29,8 @@ Dart bridge code that talks to Rust and the Windows runner.
 ## Command and Event Paths
 
 - Tab and navigation commands go from Dart to Rust through `ffi/bridge.dart`.
-- Native bounds updates go from Dart to the Windows runner through
-  `infrastructure/bridge/method_channel_bridge.dart`.
+- Native bounds updates go from Dart to Rust through `ffi/bridge.dart`, then
+  from Rust to the Windows runner through native executor callbacks.
 - Browser events come back from Rust as typed `BrowserEvent` instances and are
   consumed by the providers in `ui/providers/`.
 
@@ -53,8 +51,3 @@ placeholder shell:
 - `BrowserShell` creates the initial tab after the first frame when needed.
 - Riverpod providers react to Rust-owned browser events and snapshots.
 - The UI can drive tab lifecycle, navigation, and native bounds updates.
-
-Known limitation:
-
-- The Flutter-to-native MethodChannel currently supports only the `setBounds`
-  layout command. Browser actions themselves are routed through Rust.

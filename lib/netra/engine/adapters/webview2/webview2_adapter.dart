@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:netra_browser/netra/core/entities/engine_event.dart';
 import '../../interfaces/i_engine.dart';
 import '../../interfaces/i_frame.dart';
@@ -15,14 +17,18 @@ class WebView2Adapter implements IEngine {
   /// Creates a stateless WebView2 engine adapter.
   const WebView2Adapter();
 
-  /// Shared typed event stream derived from the Rust FFI event dispatcher.
+  /// Shared controller that owns the typed browser-event pump for the process.
   ///
-  /// Raw bridge maps are converted into typed [BrowserEvent] instances so the
-  /// engine layer can subscribe to structured browser events without depending
-  /// on infrastructure payload formats.
-  static final Stream<BrowserEvent> _events = RustBridge.instance.browserEvents
-      .map(BrowserEvent.fromMap)
-      .asBroadcastStream();
+  /// The adapter keeps a single subscription to the underlying Rust bridge and
+  /// re-exposes typed [BrowserEvent] instances through this controller. This
+  /// avoids making provider lifecycle depend on a transient mapped-stream
+  /// subscription chain.
+  static final StreamController<BrowserEvent> _eventController =
+      StreamController<BrowserEvent>.broadcast();
+  static StreamSubscription<Map<String, dynamic>>? _bridgeSubscription;
+
+  /// Shared typed event stream derived from the stable adapter-owned pump.
+  static final Stream<BrowserEvent> _events = _eventController.stream;
 
   /// Initializes the adapter boundary during app startup.
   ///
@@ -30,7 +36,9 @@ class WebView2Adapter implements IEngine {
   /// startup, so the Dart-side adapter does not need to perform extra work
   /// here. The method remains asynchronous to satisfy the engine contract.
   @override
-  Future<void> initialize() async {}
+  Future<void> initialize() async {
+    _ensureEventPump();
+  }
 
   /// Creates a new frame wrapper.
   ///
@@ -61,11 +69,17 @@ class WebView2Adapter implements IEngine {
   /// into a typed [BrowserEvent], which remains compatible with the
   /// [EngineEvent] contract.
   @override
-  Stream<EngineEvent> get engineEvents => _events;
+  Stream<EngineEvent> get engineEvents {
+    _ensureEventPump();
+    return _events;
+  }
 
   /// Exposes the typed browser event stream for adapter consumers that need
   /// the richer event model.
-  Stream<BrowserEvent> get events => _events;
+  Stream<BrowserEvent> get events {
+    _ensureEventPump();
+    return _events;
+  }
 
   /// Releases adapter-owned resources.
   ///
@@ -73,4 +87,20 @@ class WebView2Adapter implements IEngine {
   /// shared bridge streams, so disposal completes immediately.
   @override
   Future<void> dispose() async {}
+
+  static void _ensureEventPump() {
+    if (_bridgeSubscription != null) {
+      return;
+    }
+
+    _bridgeSubscription = RustBridge.instance.browserEvents.listen(
+      (event) {
+        _eventController.add(BrowserEvent.fromMap(event));
+      },
+      onError: _eventController.addError,
+      onDone: () {
+        _bridgeSubscription = null;
+      },
+    );
+  }
 }

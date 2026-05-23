@@ -70,10 +70,6 @@ class TabProvider {
     _logDebug('closeTab -> Rust only');
     await _rust.closeTab(tabId: tabId);
     await _ref.read(browserProvider).refreshState(clearErrorMessage: true);
-
-    if (_ref.read(browserStateProvider).tabs.isEmpty) {
-      await createTab();
-    }
   }
 
   /// Switches the active browser tab to [tabId].

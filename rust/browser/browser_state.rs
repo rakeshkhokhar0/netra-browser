@@ -63,7 +63,6 @@ impl BrowserState {
 
     /// Closes a tab through [TabManager].
     pub fn close_tab(&mut self, tab_id: TabId) {
-        self.navigation_controller.remove_tab_history(&tab_id);
         let _ = self.tab_manager.close_tab(tab_id);
     }
 
@@ -77,64 +76,19 @@ impl BrowserState {
     /// Returns the normalized URL when an active tab exists, otherwise `None`.
     pub fn navigate(&mut self, input: String) -> Option<String> {
         let active_tab_id = self.get_active_tab_id()?;
-        let url = self
-            .navigation_controller
-            .navigate(active_tab_id.clone(), input);
-        let can_go_back = self
-            .navigation_controller
-            .can_go_back(active_tab_id.clone());
-        let can_go_forward = self
-            .navigation_controller
-            .can_go_forward(active_tab_id.clone());
+        let url = self.navigation_controller.navigate(input);
+        let current_tab = self.get_tab(&active_tab_id);
         self.tab_manager.update_navigation_state(
             &active_tab_id,
             url.clone(),
-            can_go_back,
-            can_go_forward,
-        );
-        Some(url)
-    }
-
-    /// Requests backward navigation on the active tab via
-    /// [NavigationController].
-    ///
-    /// Returns the resolved URL when possible, otherwise `None`.
-    pub fn go_back(&mut self) -> Option<String> {
-        let active_tab_id = self.get_active_tab_id()?;
-        let url = self.navigation_controller.go_back(active_tab_id.clone())?;
-        let can_go_back = self
-            .navigation_controller
-            .can_go_back(active_tab_id.clone());
-        let can_go_forward = self
-            .navigation_controller
-            .can_go_forward(active_tab_id.clone());
-        self.tab_manager.update_navigation_state(
-            &active_tab_id,
-            url.clone(),
-            can_go_back,
-            can_go_forward,
-        );
-        Some(url)
-    }
-
-    /// Requests forward navigation on the active tab via
-    /// [NavigationController].
-    ///
-    /// Returns the resolved URL when possible, otherwise `None`.
-    pub fn go_forward(&mut self) -> Option<String> {
-        let active_tab_id = self.get_active_tab_id()?;
-        let url = self.navigation_controller.go_forward(active_tab_id.clone())?;
-        let can_go_back = self
-            .navigation_controller
-            .can_go_back(active_tab_id.clone());
-        let can_go_forward = self
-            .navigation_controller
-            .can_go_forward(active_tab_id.clone());
-        self.tab_manager.update_navigation_state(
-            &active_tab_id,
-            url.clone(),
-            can_go_back,
-            can_go_forward,
+            current_tab
+                .as_ref()
+                .map(|tab| tab.can_go_back)
+                .unwrap_or(false),
+            current_tab
+                .as_ref()
+                .map(|tab| tab.can_go_forward)
+                .unwrap_or(false),
         );
         Some(url)
     }
@@ -279,7 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn close_tab_removes_navigation_history_for_closed_tab() {
+    fn close_tab_removes_closed_tab_from_state() {
         let mut state = BrowserState::new();
         let first_tab = state.create_tab().expect("first tab should be created");
         let second_tab = state.create_tab().expect("second tab should be created");
@@ -291,8 +245,6 @@ mod tests {
 
         state.close_tab(first_tab.id.clone());
 
-        assert!(!state.navigation_controller.histories.contains_key(&first_tab.id));
-        assert!(state.navigation_controller.histories.contains_key(&second_tab.id));
         assert!(!state.contains_tab(&first_tab.id));
         assert!(state.contains_tab(&second_tab.id));
     }

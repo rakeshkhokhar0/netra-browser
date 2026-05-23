@@ -21,9 +21,32 @@ struct NativeExecutorBindings {
   int(__cdecl* go_forward)(const char* tab_id);
   int(__cdecl* reload)(const char* tab_id);
   int(__cdecl* stop_loading)(const char* tab_id);
+  int(__cdecl* set_bounds)(const char* tab_id, int32_t x, int32_t y, int32_t width,
+                           int32_t height);
 };
 
 using RegisterNativeExecutorFn = int(__cdecl*)(NativeExecutorBindings);
+static DWORD g_ui_thread_id = 0;
+
+/// Ensures Rust-originated native control callbacks run on the captured UI
+/// thread to keep WebView2/COM access thread-safe.
+bool EnsureUiThreadForRustCallback(const char* operation_name) {
+  if (g_ui_thread_id == 0) {
+    std::printf("[C++] %s rejected: UI thread not captured\n", operation_name);
+    return false;
+  }
+
+  const DWORD current_thread = ::GetCurrentThreadId();
+  if (current_thread == g_ui_thread_id) {
+    return true;
+  }
+
+  std::printf(
+      "[C++] %s rejected: wrong thread (expected=%lu, actual=%lu)\n",
+      operation_name, static_cast<unsigned long>(g_ui_thread_id),
+      static_cast<unsigned long>(current_thread));
+  return false;
+}
 
 /// Converts a UTF-8 string into a wide string for WebView2 APIs.
 std::wstring ToWide(const std::string& value) {
@@ -70,6 +93,10 @@ bool ReadRequiredString(const char* raw_value, std::string* value) {
 
 /// Creates a native WebView2 tab for the provided tab identifier.
 int __cdecl CreateTabBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("create_tab")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -88,30 +115,63 @@ int __cdecl CreateTabBridge(const char* raw_tab_id) {
   RECT bounds{};
   ::GetClientRect(parent_window, &bounds);
 
+  bool create_completed = false;
+  HRESULT create_status = E_FAIL;
+
   const HRESULT result = manager.CreateController(
       tab_id, bounds,
-      [tab_id](HRESULT status, ICoreWebView2Controller* controller) {
+      [&create_completed, &create_status, tab_id](
+          HRESULT status, ICoreWebView2Controller* controller) {
+        create_status = status;
         if (SUCCEEDED(status) && controller != nullptr) {
-          WebViewManager::GetInstance().SetActiveTab(tab_id);
+          create_status = WebViewManager::GetInstance().SetActiveTab(tab_id);
         }
+        create_completed = true;
       });
+  if (FAILED(result)) {
+    return 0;
+  }
 
-  return SUCCEEDED(result) ? 1 : 0;
+  // CreateController is asynchronous. Block this bridge call until the
+  // controller-created callback runs, while pumping the UI queue so the
+  // completion callback can execute on the STA thread.
+  while (!create_completed) {
+    MSG message;
+    if (::PeekMessage(&message, nullptr, 0, 0, PM_REMOVE)) {
+      ::TranslateMessage(&message);
+      ::DispatchMessage(&message);
+    } else {
+      ::Sleep(1);
+    }
+  }
+
+  return SUCCEEDED(create_status) ? 1 : 0;
 }
 
 /// Closes a native WebView2 tab for the provided tab identifier.
 int __cdecl CloseTabBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("close_tab")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
   }
 
   const HRESULT result = WebViewManager::GetInstance().DestroyController(tab_id);
-  return SUCCEEDED(result) ? 1 : 0;
+  if (SUCCEEDED(result) || result == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) {
+    return 1;
+  }
+  return 0;
 }
 
 /// Marks the provided native tab as active.
 int __cdecl SetActiveTabBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("set_active_tab")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -123,6 +183,10 @@ int __cdecl SetActiveTabBridge(const char* raw_tab_id) {
 
 /// Loads a URL in the provided native tab.
 int __cdecl LoadUrlBridge(const char* raw_tab_id, const char* raw_url) {
+  if (!EnsureUiThreadForRustCallback("load_url")) {
+    return 0;
+  }
+
   std::string tab_id;
   std::string url;
   if (!ReadRequiredString(raw_tab_id, &tab_id) ||
@@ -141,6 +205,10 @@ int __cdecl LoadUrlBridge(const char* raw_tab_id, const char* raw_url) {
 
 /// Requests backward navigation for the provided native tab.
 int __cdecl GoBackBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("go_back")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -157,6 +225,10 @@ int __cdecl GoBackBridge(const char* raw_tab_id) {
 
 /// Requests forward navigation for the provided native tab.
 int __cdecl GoForwardBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("go_forward")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -173,6 +245,10 @@ int __cdecl GoForwardBridge(const char* raw_tab_id) {
 
 /// Reloads the provided native tab.
 int __cdecl ReloadBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("reload")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -189,6 +265,10 @@ int __cdecl ReloadBridge(const char* raw_tab_id) {
 
 /// Stops loading in the provided native tab.
 int __cdecl StopLoadingBridge(const char* raw_tab_id) {
+  if (!EnsureUiThreadForRustCallback("stop_loading")) {
+    return 0;
+  }
+
   std::string tab_id;
   if (!ReadRequiredString(raw_tab_id, &tab_id)) {
     return 0;
@@ -200,6 +280,31 @@ int __cdecl StopLoadingBridge(const char* raw_tab_id) {
   }
 
   const HRESULT result = webview->Stop();
+  return SUCCEEDED(result) ? 1 : 0;
+}
+
+/// Updates native tab host bounds for the provided tab.
+int __cdecl SetBoundsBridge(const char* raw_tab_id, int32_t x, int32_t y,
+                            int32_t width, int32_t height) {
+  if (!EnsureUiThreadForRustCallback("set_bounds")) {
+    return 0;
+  }
+
+  std::string tab_id;
+  if (!ReadRequiredString(raw_tab_id, &tab_id)) {
+    return 0;
+  }
+  if (width <= 0 || height <= 0) {
+    return 0;
+  }
+
+  RECT bounds{};
+  bounds.left = x;
+  bounds.top = y;
+  bounds.right = x + width;
+  bounds.bottom = y + height;
+
+  const HRESULT result = WebViewManager::GetInstance().SetBounds(tab_id, bounds);
   return SUCCEEDED(result) ? 1 : 0;
 }
 
@@ -287,9 +392,14 @@ void RegisterRustNativeExecutor() {
     return;
   }
 
+  if (g_ui_thread_id == 0) {
+    g_ui_thread_id = ::GetCurrentThreadId();
+  }
+
   const NativeExecutorBindings bindings{
       &CreateTabBridge,   &CloseTabBridge, &SetActiveTabBridge, &LoadUrlBridge,
       &GoBackBridge,      &GoForwardBridge, &ReloadBridge,      &StopLoadingBridge,
+      &SetBoundsBridge,
   };
 
   (void)g_register_native_executor(bindings);

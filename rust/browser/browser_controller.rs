@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
@@ -31,6 +33,9 @@ pub struct BrowserController {
     pub state: BrowserRuntimeState,
     /// Internal synchronous event bus.
     pub event_bus: EventBus,
+    /// Tracks last accepted native event sequence per tab to reject stale or
+    /// duplicate native events at the Rust boundary.
+    pub native_event_sequences: HashMap<TabId, u32>,
 }
 
 /// Shared global browser controller instance used by FFI-facing entry points.
@@ -49,6 +54,7 @@ impl BrowserController {
         Self {
             state: BrowserRuntimeState::new(),
             event_bus: EventBus::new(),
+            native_event_sequences: HashMap::new(),
         }
     }
 
@@ -63,8 +69,15 @@ impl BrowserController {
     pub fn create_tab_safe() -> Result<Tab, NetraError> {
         println!("[RUST] create_tab_safe");
 
-        let (tab_id, event_bus, browser_event) = Self::with_locked_controller(|controller| {
+        let (tab_id, event_bus, browser_event, newly_suspended_tab_ids) =
+            Self::with_locked_controller(|controller| {
+            let suspended_before = controller.suspended_tab_ids();
             let created_tab = controller.state.create_tab()?;
+            let suspended_after = controller.suspended_tab_ids();
+            let newly_suspended_tab_ids = suspended_after
+                .difference(&suspended_before)
+                .cloned()
+                .collect::<Vec<_>>();
             let sequence_number = controller
                 .state
                 .tab_manager
@@ -81,7 +94,12 @@ impl BrowserController {
                 Some(authoritative_tab.clone()),
             );
 
-            Ok((authoritative_tab.id, controller.event_bus.clone(), browser_event))
+            Ok((
+                authoritative_tab.id,
+                controller.event_bus.clone(),
+                browser_event,
+                newly_suspended_tab_ids,
+            ))
         })?;
 
         if let Err(error) = native_control::create_tab(&tab_id) {
@@ -95,6 +113,10 @@ impl BrowserController {
             }
 
             return Err(error);
+        }
+
+        for suspended_tab_id in newly_suspended_tab_ids {
+            let _ = native_control::close_tab(&suspended_tab_id);
         }
 
         let tab = Self::with_locked_controller(|controller| {
@@ -119,9 +141,18 @@ impl BrowserController {
     /// - no full-state rollback is attempted, which prevents stale snapshots
     ///   from overwriting concurrent state changes
     pub fn close_tab_safe(tab_id: TabId) -> Result<(), NetraError> {
-        let (event_bus, browser_event) = Self::with_locked_controller(|controller| {
+        let (event_bus, browser_event, replacement_tab_id, replacement_event) =
+            Self::with_locked_controller(|controller| {
             controller.ensure_tab_exists(&tab_id)?;
             controller.state.close_tab(tab_id.clone());
+            controller.native_event_sequences.remove(&tab_id);
+
+            let replacement_tab_id = if controller.state.tab_manager.tab_count() == 0 {
+                let replacement_tab = controller.state.create_tab()?;
+                Some(replacement_tab.id)
+            } else {
+                None
+            };
 
             let next_active_tab = controller
                 .state
@@ -142,13 +173,42 @@ impl BrowserController {
                 authoritative_tab,
             );
 
-            Ok((controller.event_bus.clone(), browser_event))
+            let replacement_event = replacement_tab_id.as_ref().and_then(|created_tab_id| {
+                let replacement_sequence =
+                    controller.state.tab_manager.increment_sequence(created_tab_id);
+                let replacement_tab = controller.state.get_tab(created_tab_id);
+                replacement_tab.map(|tab| {
+                    Event::BrowserEvent(
+                        replacement_sequence,
+                        BrowserEvent::FrameCreated {
+                            tab_id: created_tab_id.clone(),
+                        },
+                        Some(tab),
+                    )
+                })
+            });
+
+            Ok((
+                controller.event_bus.clone(),
+                browser_event,
+                replacement_tab_id,
+                replacement_event,
+            ))
         })?;
 
         native_control::close_tab(&tab_id)?;
+        if let Some(created_tab_id) = replacement_tab_id.as_ref() {
+            native_control::create_tab(created_tab_id)?;
+        }
 
         event_bus.publish(Event::TabClosed(tab_id.clone()));
         event_bus.publish(browser_event);
+        if let Some(created_tab_id) = replacement_tab_id {
+            event_bus.publish(Event::TabCreated(created_tab_id));
+        }
+        if let Some(replacement_event) = replacement_event {
+            event_bus.publish(replacement_event);
+        }
         Ok(())
     }
 
@@ -161,11 +221,18 @@ impl BrowserController {
     /// - native failures are returned directly
     /// - no full-state rollback is attempted
     pub fn set_active_tab_safe(tab_id: TabId) -> Result<(), NetraError> {
-        let should_reload = Self::with_locked_controller(|controller| {
+        let (was_suspended, should_reload, newly_suspended_tab_ids) =
+            Self::with_locked_controller(|controller| {
+            let suspended_before = controller.suspended_tab_ids();
             controller.ensure_tab_exists(&tab_id)?;
             let was_suspended = controller.state.tab_manager.is_tab_suspended(&tab_id);
 
             if controller.state.set_active_tab(tab_id.clone()) {
+                let suspended_after = controller.suspended_tab_ids();
+                let newly_suspended_tab_ids = suspended_after
+                    .difference(&suspended_before)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let current_url = controller
                     .state
                     .get_tab(&tab_id)
@@ -180,11 +247,15 @@ impl BrowserController {
                     controller.state.set_tab_loading_state(&tab_id, true);
                 }
 
-                Ok(should_reload)
+                Ok((was_suspended, should_reload, newly_suspended_tab_ids))
             } else {
                 Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")))
             }
         })?;
+
+        if was_suspended {
+            native_control::create_tab(&tab_id)?;
+        }
 
         let native_result = native_control::set_active_tab(&tab_id).and_then(|_| {
             if should_reload {
@@ -194,7 +265,13 @@ impl BrowserController {
             }
         });
 
-        native_result
+        native_result?;
+
+        for suspended_tab_id in newly_suspended_tab_ids {
+            let _ = native_control::close_tab(&suspended_tab_id);
+        }
+
+        Ok(())
     }
 
     /// Activates the requested tab, normalizes the supplied URL, updates Rust
@@ -210,7 +287,7 @@ impl BrowserController {
     pub fn navigate_safe(tab_id: TabId, url: String) -> Result<(), NetraError> {
         println!("[RUST] navigate_safe: tab_id={tab_id}, url={url}");
 
-        let (event_bus, normalized_url) =
+        let normalized_url =
             Self::with_locked_controller(|controller| {
                 controller.ensure_tab_exists(&tab_id)?;
 
@@ -227,88 +304,78 @@ impl BrowserController {
 
                 controller.state.set_tab_loading_state(&tab_id, true);
 
-                Ok((controller.event_bus.clone(), normalized_url))
+                Ok(normalized_url)
             })?;
 
         native_control::set_active_tab(&tab_id)
-            .and_then(|_| native_control::load_url(&tab_id, &normalized_url))?;
-
-        event_bus.publish(Event::NavigationCompleted(
-            tab_id,
-            normalized_url.clone(),
-        ));
-        Ok(())
+            .and_then(|_| native_control::load_url(&tab_id, &normalized_url))
     }
 
-    /// Activates the requested tab, moves its history cursor backward in Rust
-    /// state, and then forwards the back command to the native layer.
+    /// Activates the requested tab, verifies native backward navigation is
+    /// currently available for it, and then forwards the back command to the
+    /// native layer.
     ///
     /// Failure handling:
     /// - native failures are returned directly
     /// - no full-state rollback is attempted
     pub fn go_back_safe(tab_id: TabId) -> Result<(), NetraError> {
-        let (event_bus, resolved_url) =
-            Self::with_locked_controller(|controller| {
-                controller.ensure_tab_exists(&tab_id)?;
+        Self::with_locked_controller(|controller| {
+            controller.ensure_tab_exists(&tab_id)?;
 
-                if !controller.state.set_active_tab(tab_id.clone()) {
-                    return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
-                }
+            if !controller.state.set_active_tab(tab_id.clone()) {
+                return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
+            }
 
-                let resolved_url = controller.state.go_back().ok_or_else(|| {
-                    NetraError::OperationFailed(
-                        "back navigation is not available".to_string(),
-                    )
-                })?;
+            let current_tab = controller
+                .state
+                .get_tab(&tab_id)
+                .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` was not found")))?;
 
-                controller.state.set_tab_loading_state(&tab_id, true);
+            if !current_tab.can_go_back {
+                return Err(NetraError::OperationFailed(
+                    "back navigation is not available".to_string(),
+                ));
+            }
 
-                Ok((controller.event_bus.clone(), resolved_url))
-            })?;
+            Ok(())
+        })?;
 
         native_control::set_active_tab(&tab_id)
             .and_then(|_| native_control::go_back(&tab_id))?;
-
-        event_bus.publish(Event::NavigationCompleted(
-            tab_id,
-            resolved_url.clone(),
-        ));
         Ok(())
     }
 
-    /// Activates the requested tab, moves its history cursor forward in Rust
-    /// state, and then forwards the forward command to the native layer.
+    /// Activates the requested tab, verifies native forward navigation is
+    /// currently available for it, and then forwards the forward command to
+    /// the native layer.
     ///
     /// Failure handling:
     /// - native failures are returned directly
     /// - no full-state rollback is attempted
     pub fn go_forward_safe(tab_id: TabId) -> Result<(), NetraError> {
-        let (event_bus, resolved_url) =
-            Self::with_locked_controller(|controller| {
-                controller.ensure_tab_exists(&tab_id)?;
+        Self::with_locked_controller(|controller| {
+            controller.ensure_tab_exists(&tab_id)?;
 
-                if !controller.state.set_active_tab(tab_id.clone()) {
-                    return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
-                }
+            if !controller.state.set_active_tab(tab_id.clone()) {
+                return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
+            }
 
-                let resolved_url = controller.state.go_forward().ok_or_else(|| {
-                    NetraError::OperationFailed(
-                        "forward navigation is not available".to_string(),
-                    )
-                })?;
+            let current_tab = controller
+                .state
+                .get_tab(&tab_id)
+                .ok_or_else(|| NetraError::NotFound(format!("tab `{tab_id}` was not found")))?;
 
-                controller.state.set_tab_loading_state(&tab_id, true);
+            if !current_tab.can_go_forward {
+                return Err(NetraError::OperationFailed(
+                    "forward navigation is not available".to_string(),
+                ));
+            }
 
-                Ok((controller.event_bus.clone(), resolved_url))
-            })?;
+            Ok(())
+        })?;
 
         native_control::set_active_tab(&tab_id)
             .and_then(|_| native_control::go_forward(&tab_id))?;
-
-        event_bus.publish(Event::NavigationCompleted(
-            tab_id,
-            resolved_url.clone(),
-        ));
         Ok(())
     }
 
@@ -319,35 +386,31 @@ impl BrowserController {
     /// - native failures are returned directly
     /// - no full-state rollback is attempted
     pub fn reload_safe(tab_id: TabId) -> Result<(), NetraError> {
-        let (event_bus, current_url) =
-            Self::with_locked_controller(|controller| {
-                controller.ensure_tab_exists(&tab_id)?;
+        Self::with_locked_controller(|controller| {
+            controller.ensure_tab_exists(&tab_id)?;
 
-                if !controller.state.set_active_tab(tab_id.clone()) {
-                    return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
-                }
+            if !controller.state.set_active_tab(tab_id.clone()) {
+                return Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")));
+            }
 
-                let current_url = controller
-                    .state
-                    .get_tab(&tab_id)
-                    .map(|tab| tab.url)
-                    .filter(|url| !url.trim().is_empty())
-                    .ok_or_else(|| {
-                        NetraError::OperationFailed(
-                            "reload is not available for an empty tab".to_string(),
-                        )
-                    })?;
+            controller
+                .state
+                .get_tab(&tab_id)
+                .map(|tab| tab.url)
+                .filter(|url| !url.trim().is_empty())
+                .ok_or_else(|| {
+                    NetraError::OperationFailed(
+                        "reload is not available for an empty tab".to_string(),
+                    )
+                })?;
 
-                controller.state.set_tab_loading_state(&tab_id, true);
+            controller.state.set_tab_loading_state(&tab_id, true);
 
-                Ok((controller.event_bus.clone(), current_url))
-            })?;
+            Ok(())
+        })?;
 
         native_control::set_active_tab(&tab_id)
-            .and_then(|_| native_control::reload(&tab_id))?;
-
-        event_bus.publish(Event::NavigationCompleted(tab_id, current_url));
-        Ok(())
+            .and_then(|_| native_control::reload(&tab_id))
     }
 
     /// Stops loading in the requested tab while keeping the controller mutex
@@ -370,12 +433,48 @@ impl BrowserController {
     /// publishes the derived internal event after releasing the controller
     /// mutex.
     pub fn handle_browser_event_safe(event: BrowserEvent) -> Result<(), NetraError> {
-        let (event_bus, published_event, sequence_number) =
+        Self::handle_browser_event_with_sequence_safe(event, None)
+    }
+
+    /// Applies an authoritative native browser event with optional native
+    /// sequence metadata, dropping stale or duplicate native events when a
+    /// monotonic per-tab sequence is provided.
+    pub fn handle_browser_event_with_sequence_safe(
+        event: BrowserEvent,
+        native_sequence: Option<u32>,
+    ) -> Result<(), NetraError> {
+        let (event_bus, published_event, sequence_number, crash_recovery_plan) =
             Self::with_locked_controller(|controller| {
-                println!("[Rust] Event received: {:?}", event);
                 let tab_id = event.tab_id().to_string();
+
+                if let Some(sequence) = native_sequence {
+                    if sequence > 0 {
+                        let last_sequence = controller
+                            .native_event_sequences
+                            .get(&tab_id)
+                            .copied()
+                            .unwrap_or(0);
+                        if sequence <= last_sequence {
+                            return Ok((controller.event_bus.clone(), None, 0, None));
+                        }
+                        controller.native_event_sequences.insert(tab_id.clone(), sequence);
+                    }
+                }
+
                 controller.state.apply_browser_event(&event);
                 println!("[Rust] State updated for tab: {tab_id}");
+
+                let crash_recovery_plan = match &event {
+                    BrowserEvent::TabCrashed { tab_id } => {
+                        controller.state.get_tab(tab_id).map(|tab| {
+                            let should_reload = !tab.url.trim().is_empty()
+                                && tab.url.trim() != "about"
+                                && tab.url.trim() != "about:blank";
+                            (tab.id.clone(), tab.is_active, should_reload)
+                        })
+                    }
+                    _ => None,
+                };
 
                 let sequence_tab_id = controller
                     .state
@@ -396,11 +495,32 @@ impl BrowserController {
                 let published_event =
                     Event::BrowserEvent(sequence_number, event.clone(), current_tab);
 
-                Ok((controller.event_bus.clone(), published_event, sequence_number))
+                Ok((
+                    controller.event_bus.clone(),
+                    Some(published_event),
+                    sequence_number,
+                    crash_recovery_plan,
+                ))
             })?;
 
-        event_bus.publish(published_event);
-        println!("[Rust] Event published with sequence: {sequence_number}");
+        if let Some((tab_id, is_active, should_reload)) = crash_recovery_plan {
+            // Recover crashed tabs by rebuilding the native frame while keeping
+            // Rust tab identity and state authoritative.
+            let _ = native_control::close_tab(&tab_id);
+            native_control::create_tab(&tab_id)?;
+            if is_active {
+                native_control::set_active_tab(&tab_id)?;
+            }
+            if should_reload {
+                native_control::reload(&tab_id)?;
+            }
+        }
+
+        if let Some(published_event) = published_event {
+            event_bus.publish(published_event);
+            println!("[Rust] Event published with sequence: {sequence_number}");
+        }
+
         Ok(())
     }
 
@@ -454,6 +574,15 @@ impl BrowserController {
         } else {
             Err(NetraError::NotFound(format!("tab `{tab_id}` was not found")))
         }
+    }
+
+    fn suspended_tab_ids(&self) -> HashSet<TabId> {
+        self.state
+            .get_tabs()
+            .into_iter()
+            .filter(|tab| tab.is_suspended)
+            .map(|tab| tab.id)
+            .collect()
     }
 
     fn with_locked_controller<T>(

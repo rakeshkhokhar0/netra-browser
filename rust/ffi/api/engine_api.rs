@@ -1,4 +1,5 @@
 use crate::browser::browser_controller::BrowserController;
+use crate::browser::browser_state::WindowBounds;
 use crate::core::entities::browser_event::BrowserEvent;
 use crate::core::entities::browser_state::BrowserState;
 use crate::core::entities::tab::Tab;
@@ -102,6 +103,31 @@ pub fn stop_loading(tab_id: String) -> Result<(), NetraError> {
     BrowserController::stop_loading_safe(tab_id)
 }
 
+/// Updates native bounds through Rust orchestration and native delegation.
+#[flutter_rust_bridge::frb(sync)]
+pub fn set_bounds(
+    tab_id: String,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), NetraError> {
+    validate_tab_id(&tab_id)?;
+    if width <= 0 || height <= 0 {
+        return Err(NetraError::InvalidInput(
+            "bounds width and height must be greater than zero".to_string(),
+        ));
+    }
+
+    BrowserController::set_window_bounds_safe(WindowBounds {
+        width: width as u32,
+        height: height as u32,
+        x,
+        y,
+    })?;
+    crate::native_control::set_bounds(&tab_id, x, y, width, height)
+}
+
 /// Routes a typed native browser event into the Rust browser controller.
 ///
 /// This function is a thin handoff to
@@ -110,6 +136,16 @@ pub fn stop_loading(tab_id: String) -> Result<(), NetraError> {
 #[flutter_rust_bridge::frb(sync)]
 pub fn handle_event(event: BrowserEvent) -> Result<(), NetraError> {
     BrowserController::handle_browser_event_safe(event)
+}
+
+/// Routes a typed native browser event into the Rust browser controller with
+/// explicit native sequence metadata for stale/duplicate rejection.
+#[flutter_rust_bridge::frb(sync)]
+pub fn handle_event_with_sequence(
+    event: BrowserEvent,
+    native_sequence: u32,
+) -> Result<(), NetraError> {
+    BrowserController::handle_browser_event_with_sequence_safe(event, Some(native_sequence))
 }
 
 /// Returns the full browser-state snapshot owned by the Rust core.

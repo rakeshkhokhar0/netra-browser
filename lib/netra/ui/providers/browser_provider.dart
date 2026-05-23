@@ -198,50 +198,19 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
   }
 
   void _handleEvent(BrowserEvent event) {
-    _logDebug('event received -> authoritative tab update (${event.type})');
+    _logDebug('event received -> refresh from Rust snapshot (${event.type})');
 
     final authoritativeTabMap = event.tabState;
-    if (authoritativeTabMap == null) {
-      if (event.type == 'frameDestroyed') {
-        final remainingTabs = state.tabs
-            .where((tab) => tab.id != event.tabId)
-            .toList(growable: false);
-        state = state.copyWith(
-          tabs: remainingTabs,
-          activeTabId: _resolveActiveTabId(
-            remainingTabs,
-            state.activeTabId,
-          ),
-          clearActiveTabId: remainingTabs.isEmpty,
-          clearErrorMessage: true,
-        );
-        return;
-      }
+    final errorMessage = switch (event.type) {
+      'navigationFailed' when authoritativeTabMap != null =>
+        'Navigation failed for ${TabState.fromMap(authoritativeTabMap).url}',
+      'tabCrashed' => 'The current tab crashed and needs to be reloaded.',
+      _ => null,
+    };
 
-      _scheduleRefresh(clearErrorMessage: true);
-      return;
-    }
-
-    final authoritativeTab = TabState.fromMap(authoritativeTabMap);
-    final nextTabs = _applyAuthoritativeTabUpdate(
-      event: event,
-      authoritativeTab: authoritativeTab,
-    );
-
-    state = state.copyWith(
-      tabs: nextTabs,
-      activeTabId: _resolveActiveTabId(
-        nextTabs,
-        authoritativeTab.isActive ? authoritativeTab.id : state.activeTabId,
-      ),
-      clearActiveTabId: nextTabs.isEmpty,
-      errorMessage: switch (event.type) {
-        'navigationFailed' => 'Navigation failed for ${authoritativeTab.url}',
-        'tabCrashed' => 'The current tab crashed and needs to be reloaded.',
-        _ => null,
-      },
-      clearErrorMessage:
-          event.type != 'navigationFailed' && event.type != 'tabCrashed',
+    _scheduleRefresh(
+      errorMessage: errorMessage,
+      clearErrorMessage: errorMessage == null,
     );
   }
 
@@ -302,52 +271,4 @@ class BrowserProvider extends StateNotifier<BrowserProviderState> {
     developer.log(message, name: 'NetraBrowser');
   }
 
-  List<TabState> _applyAuthoritativeTabUpdate({
-    required BrowserEvent event,
-    required TabState authoritativeTab,
-  }) {
-    // Preserve existing order in Flutter. Only Rust decides tab ordering;
-    // Dart replaces matching tabs in place and appends truly new tabs at end.
-    final nextTabs = state.tabs
-        .where((tab) => tab.id != event.tabId || event.type != 'frameDestroyed')
-        .toList(growable: true);
-    final existingIndex = nextTabs.indexWhere((tab) => tab.id == authoritativeTab.id);
-
-    if (existingIndex >= 0) {
-      if (authoritativeTab.sequenceNumber > 0 &&
-          nextTabs[existingIndex].sequenceNumber > authoritativeTab.sequenceNumber) {
-        return nextTabs;
-      }
-      nextTabs[existingIndex] = authoritativeTab;
-    } else {
-      nextTabs.add(authoritativeTab);
-    }
-
-    if (authoritativeTab.isActive) {
-      for (var index = 0; index < nextTabs.length; index++) {
-        if (nextTabs[index].id != authoritativeTab.id && nextTabs[index].isActive) {
-          nextTabs[index] = nextTabs[index].copyWith(isActive: false);
-        }
-      }
-    }
-
-    return nextTabs;
-  }
-
-  String? _resolveActiveTabId(List<TabState> tabs, String? preferredId) {
-    if (tabs.isEmpty) {
-      return null;
-    }
-
-    final authoritativeActiveTab = tabs.where((tab) => tab.isActive);
-    if (authoritativeActiveTab.isNotEmpty) {
-      return authoritativeActiveTab.first.id;
-    }
-
-    if (preferredId != null && tabs.any((tab) => tab.id == preferredId)) {
-      return preferredId;
-    }
-
-    return tabs.first.id;
-  }
 }

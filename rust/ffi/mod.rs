@@ -26,6 +26,20 @@ pub mod native_control;
 static NETRA_CONNECTION_MESSAGE: &[u8] = b"Netra Rust bridge connected\0";
 static EVENT_DISPATCHER_REGISTERED: AtomicBool = AtomicBool::new(false);
 
+const EVENT_NAVIGATION_STARTED: i32 = 1;
+const EVENT_FRAME_CREATED: i32 = 2;
+const EVENT_FRAME_DESTROYED: i32 = 3;
+const EVENT_LOAD_STARTED: i32 = 4;
+const EVENT_NAVIGATION_COMPLETED: i32 = 5;
+const EVENT_TITLE_CHANGED: i32 = 6;
+const EVENT_HISTORY_STATE_CHANGED: i32 = 7;
+const EVENT_REQUEST_BLOCKED: i32 = 8;
+const EVENT_NAVIGATION_FAILED: i32 = 9;
+const EVENT_URL_CHANGED: i32 = 10;
+const EVENT_LOAD_FINISHED: i32 = 11;
+const EVENT_FAVICON_CHANGED: i32 = 12;
+const EVENT_TAB_CRASHED: i32 = 13;
+
 /// Returns a simple integer used to prove the Rust DLL loaded successfully.
 #[unsafe(no_mangle)]
 pub extern "C" fn netra_connection_smoke_test() -> i32 {
@@ -113,6 +127,28 @@ pub extern "C" fn netra_reload(tab_id: *const c_char) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn netra_stop_loading(tab_id: *const c_char) -> i32 {
     with_string_arg(tab_id, api::engine_api::stop_loading)
+}
+
+/// Updates native embedding bounds for the provided tab.
+#[unsafe(no_mangle)]
+pub extern "C" fn netra_set_bounds(
+    tab_id: *const c_char,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    if tab_id.is_null() {
+        return 0;
+    }
+    let tab = unsafe { std::ffi::CStr::from_ptr(tab_id) }
+        .to_string_lossy()
+        .into_owned();
+    if api::engine_api::set_bounds(tab, x, y, width, height).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 fn with_string_arg<F>(ptr: *const c_char, operation: F) -> i32
@@ -229,49 +265,49 @@ pub unsafe extern "C" fn netra_handle_native_event(event: FfiNativeBrowserEvent)
 
     use crate::core::entities::browser_event::BrowserEvent;
     let browser_event = match event.event_type {
-        1 => BrowserEvent::NavigationStarted {
+        EVENT_NAVIGATION_STARTED => BrowserEvent::NavigationStarted {
             tab_id,
             url: primary_string,
             is_same_document: event.bool_value != 0,
         },
-        2 => BrowserEvent::FrameCreated { tab_id },
-        3 => BrowserEvent::FrameDestroyed { tab_id },
-        4 => BrowserEvent::LoadStarted { tab_id },
-        5 => BrowserEvent::NavigationCompleted {
+        EVENT_FRAME_CREATED => BrowserEvent::FrameCreated { tab_id },
+        EVENT_FRAME_DESTROYED => BrowserEvent::FrameDestroyed { tab_id },
+        EVENT_LOAD_STARTED => BrowserEvent::LoadStarted { tab_id },
+        EVENT_NAVIGATION_COMPLETED => BrowserEvent::NavigationCompleted {
             tab_id,
             url: primary_string,
             is_same_document: event.bool_value != 0,
         },
-        6 => BrowserEvent::TitleChanged {
+        EVENT_TITLE_CHANGED => BrowserEvent::TitleChanged {
             tab_id,
             title: primary_string,
         },
-        12 => BrowserEvent::FaviconChanged {
+        EVENT_FAVICON_CHANGED => BrowserEvent::FaviconChanged {
             tab_id,
             favicon_url: primary_string,
         },
-        7 => BrowserEvent::HistoryStateChanged {
+        EVENT_HISTORY_STATE_CHANGED => BrowserEvent::HistoryStateChanged {
             tab_id,
             can_go_back: (event.int_value & 1) != 0,
             can_go_forward: (event.int_value & 2) != 0,
         },
-        8 => BrowserEvent::RequestBlocked {
+        EVENT_REQUEST_BLOCKED => BrowserEvent::RequestBlocked {
             tab_id,
             url: primary_string,
             resource_type: secondary_string,
         },
-        9 => BrowserEvent::NavigationFailed {
+        EVENT_NAVIGATION_FAILED => BrowserEvent::NavigationFailed {
             tab_id,
             url: primary_string,
             error_code: event.int_value,
             description: secondary_string,
         },
-        10 => BrowserEvent::UrlChanged {
+        EVENT_URL_CHANGED => BrowserEvent::UrlChanged {
             tab_id,
             url: primary_string,
         },
-        11 => BrowserEvent::LoadFinished { tab_id },
-        13 => BrowserEvent::TabCrashed { tab_id },
+        EVENT_LOAD_FINISHED => BrowserEvent::LoadFinished { tab_id },
+        EVENT_TAB_CRASHED => BrowserEvent::TabCrashed { tab_id },
         _ => BrowserEvent::ConsoleMessage {
             tab_id,
             level: "debug".to_string(),
@@ -281,9 +317,7 @@ pub unsafe extern "C" fn netra_handle_native_event(event: FfiNativeBrowserEvent)
         },
     };
 
-    println!("[Rust] Event received: {:?}", browser_event);
-
-    match api::engine_api::handle_event(browser_event) {
+    match api::engine_api::handle_event_with_sequence(browser_event, event.sequence_number) {
         Ok(()) => 1,
         Err(error) => {
             eprintln!("[FFI:C] handle_event failed: {error}");
@@ -356,11 +390,17 @@ pub extern "C" fn netra_register_event_dispatcher(callback: FlutterEventCallback
 }
 
 fn to_ffi_tab_state(tab: Option<&crate::core::entities::tab::Tab>) -> FfiTabState {
+    fn into_raw_or_null(value: String) -> *mut c_char {
+        CString::new(value)
+            .map(CString::into_raw)
+            .unwrap_or(std::ptr::null_mut())
+    }
+
     match tab {
         Some(tab) => FfiTabState {
-            tab_id: CString::new(tab.id.clone()).unwrap().into_raw(),
-            url: CString::new(tab.url.clone()).unwrap().into_raw(),
-            title: CString::new(tab.title.clone()).unwrap().into_raw(),
+            tab_id: into_raw_or_null(tab.id.clone()),
+            url: into_raw_or_null(tab.url.clone()),
+            title: into_raw_or_null(tab.title.clone()),
             favicon_url: tab
                 .favicon_url
                 .clone()
@@ -399,28 +439,42 @@ fn to_ffi_browser_event(
     use crate::core::entities::browser_event::BrowserEvent;
 
     let (event_type, tab_id, favicon_url) = match event {
-        BrowserEvent::NavigationStarted { tab_id, .. } => (1, tab_id.as_str(), None),
-        BrowserEvent::FrameCreated { tab_id } => (2, tab_id.as_str(), None),
-        BrowserEvent::FrameDestroyed { tab_id } => (3, tab_id.as_str(), None),
-        BrowserEvent::LoadStarted { tab_id } => (4, tab_id.as_str(), None),
-        BrowserEvent::NavigationCompleted { tab_id, .. } => (5, tab_id.as_str(), None),
-        BrowserEvent::TitleChanged { tab_id, .. } => (6, tab_id.as_str(), None),
-        BrowserEvent::HistoryStateChanged { tab_id, .. } => (7, tab_id.as_str(), None),
-        BrowserEvent::RequestBlocked { tab_id, .. } => (8, tab_id.as_str(), None),
-        BrowserEvent::NavigationFailed { tab_id, .. } => (9, tab_id.as_str(), None),
-        BrowserEvent::UrlChanged { tab_id, .. } => (10, tab_id.as_str(), None),
-        BrowserEvent::LoadFinished { tab_id } => (11, tab_id.as_str(), None),
-        BrowserEvent::FaviconChanged { tab_id, favicon_url } => {
-            (12, tab_id.as_str(), Some(favicon_url.as_str()))
+        BrowserEvent::NavigationStarted { tab_id, .. } => {
+            (EVENT_NAVIGATION_STARTED, tab_id.as_str(), None)
         }
-        BrowserEvent::TabCrashed { tab_id } => (13, tab_id.as_str(), None),
+        BrowserEvent::FrameCreated { tab_id } => (EVENT_FRAME_CREATED, tab_id.as_str(), None),
+        BrowserEvent::FrameDestroyed { tab_id } => {
+            (EVENT_FRAME_DESTROYED, tab_id.as_str(), None)
+        }
+        BrowserEvent::LoadStarted { tab_id } => (EVENT_LOAD_STARTED, tab_id.as_str(), None),
+        BrowserEvent::NavigationCompleted { tab_id, .. } => {
+            (EVENT_NAVIGATION_COMPLETED, tab_id.as_str(), None)
+        }
+        BrowserEvent::TitleChanged { tab_id, .. } => (EVENT_TITLE_CHANGED, tab_id.as_str(), None),
+        BrowserEvent::HistoryStateChanged { tab_id, .. } => {
+            (EVENT_HISTORY_STATE_CHANGED, tab_id.as_str(), None)
+        }
+        BrowserEvent::RequestBlocked { tab_id, .. } => {
+            (EVENT_REQUEST_BLOCKED, tab_id.as_str(), None)
+        }
+        BrowserEvent::NavigationFailed { tab_id, .. } => {
+            (EVENT_NAVIGATION_FAILED, tab_id.as_str(), None)
+        }
+        BrowserEvent::UrlChanged { tab_id, .. } => (EVENT_URL_CHANGED, tab_id.as_str(), None),
+        BrowserEvent::LoadFinished { tab_id } => (EVENT_LOAD_FINISHED, tab_id.as_str(), None),
+        BrowserEvent::FaviconChanged { tab_id, favicon_url } => {
+            (EVENT_FAVICON_CHANGED, tab_id.as_str(), Some(favicon_url.as_str()))
+        }
+        BrowserEvent::TabCrashed { tab_id } => (EVENT_TAB_CRASHED, tab_id.as_str(), None),
         BrowserEvent::ConsoleMessage { .. } => return None,
     };
 
     Some(FfiBrowserEvent {
         sequence_number,
         event_type,
-        tab_id: CString::new(tab_id).unwrap().into_raw(),
+        tab_id: CString::new(tab_id)
+            .map(CString::into_raw)
+            .unwrap_or(std::ptr::null_mut()),
         favicon_url: favicon_url
             .and_then(|url| CString::new(url).ok())
             .map(CString::into_raw)

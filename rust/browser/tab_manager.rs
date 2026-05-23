@@ -52,20 +52,7 @@ impl TabManager {
         let id = Uuid::new_v4().to_string();
         self.deactivate_current_active();
 
-        let mut tab = Tab {
-            id: id.clone(),
-            url: "about".to_string(),
-            title: String::new(),
-            favicon_url: None,
-            is_active: false,
-            is_loading: false,
-            is_suspended: false,
-            can_go_back: false,
-            can_go_forward: false,
-            blocked_count: 0,
-            sequence_number: 0,
-            last_accessed: Instant::now(),
-        };
+        let mut tab = Tab::new(id.clone());
         tab.is_active = true;
         tab.last_accessed = Instant::now();
 
@@ -79,10 +66,12 @@ impl TabManager {
 
     /// Closes the given tab and emits [TabEvent::TabClosed] when removed.
     ///
-    /// If the closed tab was active, another available tab is promoted to
-    /// active.
+    /// If the closed tab was active, an adjacent tab is promoted to active:
+    /// - the next tab to the right when available
+    /// - otherwise the previous tab to the left
     pub fn close_tab(&mut self, tab_id: String) -> bool {
         let was_active = self.active_tab_id.as_deref() == Some(tab_id.as_str());
+        let removed_index = self.tab_order.iter().position(|existing_id| existing_id == &tab_id);
         if self.tabs.remove(&tab_id).is_none() {
             return false;
         }
@@ -93,7 +82,13 @@ impl TabManager {
         }
 
         self.active_tab_id = None;
-        if let Some(next_id) = self.tab_order.first().cloned() {
+        let next_index = match removed_index {
+            Some(index) if index < self.tab_order.len() => index,
+            Some(index) => index.saturating_sub(1),
+            None => 0,
+        };
+
+        if let Some(next_id) = self.tab_order.get(next_index).cloned() {
             if let Some(next_tab) = self.tabs.get_mut(&next_id) {
                 next_tab.is_active = true;
                 next_tab.is_suspended = false;
@@ -359,10 +354,15 @@ mod tests {
     fn create_tab_sets_new_tab_active() {
         let mut manager = TabManager::new();
         let tab = manager.create_tab().expect("tab should be created");
+        let tab_id = tab.id.clone();
 
-        assert_eq!(manager.active_tab_id.as_deref(), Some(tab.id.as_str()));
-        assert!(manager.tabs.get(&tab.id).map(|t| t.is_active).unwrap_or(false));
-        assert_eq!(manager.tab_order, vec![tab.id]);
+        assert_eq!(manager.active_tab_id.as_deref(), Some(tab_id.as_str()));
+        assert!(manager.tabs.get(&tab_id).map(|t| t.is_active).unwrap_or(false));
+        assert_eq!(manager.tab_order, vec![tab_id.clone()]);
+        assert_eq!(
+            manager.tabs.get(&tab_id).map(|t| t.url.as_str()),
+            Some("about:blank")
+        );
     }
 
     #[test]
@@ -424,6 +424,49 @@ mod tests {
         assert_eq!(manager.active_tab_id.as_deref(), Some(first.id.as_str()));
         assert_eq!(manager.tab_order, vec![first.id.clone()]);
         assert!(manager.tabs.get(&first.id).map(|t| t.is_active).unwrap_or(false));
+    }
+
+    #[test]
+    fn close_active_middle_tab_promotes_right_adjacent_tab() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+        let third = manager.create_tab().expect("third tab should be created");
+
+        manager.set_active_tab(second.id.clone());
+        manager.close_tab(second.id.clone());
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(third.id.as_str()));
+        assert_eq!(manager.tab_order, vec![first.id.clone(), third.id.clone()]);
+        assert!(manager.tabs.get(&third.id).map(|t| t.is_active).unwrap_or(false));
+        assert!(
+            !manager
+                .tabs
+                .get(&first.id)
+                .map(|t| t.is_active)
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn close_active_last_tab_promotes_left_adjacent_tab() {
+        let mut manager = TabManager::new();
+        let first = manager.create_tab().expect("first tab should be created");
+        let second = manager.create_tab().expect("second tab should be created");
+        let third = manager.create_tab().expect("third tab should be created");
+
+        manager.close_tab(third.id.clone());
+
+        assert_eq!(manager.active_tab_id.as_deref(), Some(second.id.as_str()));
+        assert_eq!(manager.tab_order, vec![first.id.clone(), second.id.clone()]);
+        assert!(manager.tabs.get(&second.id).map(|t| t.is_active).unwrap_or(false));
+        assert!(
+            !manager
+                .tabs
+                .get(&first.id)
+                .map(|t| t.is_active)
+                .unwrap_or(true)
+        );
     }
 
     #[test]
