@@ -375,9 +375,20 @@ Ensure:
 
 # Contributing
 
-Netra is currently not open for external code contributions while the architecture is being stabilized.
+# Contributing
 
-Bug reports, suggestions, and feedback are welcome.
+Netra is currently open for contributions.
+
+However, the project follows a strict architectural structure and system design. Contributions that introduce unnecessary abstractions, break architectural boundaries, tightly couple components, or conflict with the long-term direction of the browser may not be accepted.
+
+Before contributing:
+- Understand the existing architecture
+- Follow the current project structure
+- Keep implementations modular and maintainable
+- Avoid introducing heavy dependencies without strong justification
+- Maintain consistency with the Rust + Flutter + native bridge design
+
+Bug fixes, optimizations, documentation improvements, testing, and architecture-aligned feature contributions are welcome.
 
 ---
 
